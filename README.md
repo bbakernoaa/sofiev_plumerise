@@ -1,2 +1,2 @@
-# sofiev_plumerise
+# sofeiv_plumerise
 sofiev plume rise box model
