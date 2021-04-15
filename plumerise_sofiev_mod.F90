@@ -97,12 +97,12 @@ contains
     LayerDepth = z(pblx2_index) - z(pblx2_index - 1)
 
     call plumeRiseSofiev(PT1, PT2, LayerDepth, frp, PBLH, plmHGT)
-
     call distribute_conc_linear(Z, plmHGT, base_emis, column_emiss)
 
 
     write(*,*) 'plmHGT:', plmHGT
-    write(*,*) 'frp:', frp
+    write(*,*) 'frp:', frp/1e6
+    write(*,*) 'log frp:', log(frp)
     write(*,*) 'pblh:', PBLH
     write(*,*) 'base_emiss:', base_emis
     write(*,*) 'Z    ','dz    ','column_emiss'
@@ -112,6 +112,8 @@ contains
       hgt_prev = z(index)
     end do
 
+    call plumeRiseSofiev_inverse(PT1, PT2, LayerDepth, plmHGT,PBLH,frp)
+    
     return
   end subroutine sofiev_plmrise_column
 
@@ -164,6 +166,10 @@ contains
 
 ! ... calculate first guess plume rise top height
       Hp = alpha*pblh + beta*(frp/Pf0)**gama * exp(-delta*NFT_sq/N0_sq)
+      write(*,*) 'first guess:',Hp
+      write(*,*) 'pt1', pt1
+      write(*,*) 'pt2', pt2
+      write(*,*) 'nft_sq', NFT_sq
 ! ... compare Hp with ABL
       if (Hp .lt. pblh) then
         alpha     = 0.24
@@ -181,6 +187,80 @@ contains
 
       print *, "The height of fire plume (m) is: ", Hp
 
-      end subroutine
+    end subroutine plumeRiseSofiev
+
+    subroutine plumeRiseSofiev_inverse(PT1, PT2,laydepth,Hp,pblh,frp)
+
+!  This subroutine implements the Sofiev plume rise algorithm
+!  History: 09/16/2019: Prototype by Daniel Tong (DT)
+!           10/15/2019: bug fix based on feedback from M. Sofiev, DT
+!           11/2020: parameterization options, Yunyao Li (YL)
+!
+!  Ref: M. Sofiev et al., Evaluation of the smoke-injection
+!    height from wild-land fires using remote sensing data.
+!    Atmos. Chem. Phys., 12, 1995-2006, 2012.
+
+      real Hp           ! plume height (m)
+      real pblh         ! PBL height (m)
+      real frp          ! fire radiative power (W)
+      real NFT_sq       ! N square in Free Troposphere (@ z = 2pblh)
+      real PT1, PT2     ! Potential Temperature right below and above PBL height
+      real laydepth     ! depth of the layer at the PBL height
+      real grav         ! gravity
+
+      real Pf0          ! reference fire power (W)
+      real N0_sq        ! Brunt-Vaisala frequency (s-2)
+      real alpha        ! part of ABL passed freely
+      real beta         ! weights contribution of fire intensity
+      real gama         ! power-law dependence on FRP
+      real delta        ! dependence on stability in the FT
+
+      real logfrp
+! ... Initial values.
+! ... predefined values parameter set 3 to estimate whether hp higher
+! than abl
+      alpha     = 0.15
+      beta      = 102
+      gama      = 0.49
+      delta     = 0
+
+      Pf0       = 1000000.0
+      N0_sq     = 0.00025
+      grav      = 9.8
+      
+
+! ! ... calculate PT from T and P
+!       PT1 = T1 * (1000/P1)**0.286
+!       PT2 = T2 * (1000/P2)**0.286
+
+! ... calculate Brunt-Vaisala frequency
+      NFT_sq = grav/PT1*abs(PT1-PT2)/laydepth
+
+! ... calculate first guess plume rise top height
+      !Hp = alpha*pblh + beta*(frp/Pf0)**gama * exp(-delta*NFT_sq/N0_sq)
+! ... compare Hp with ABL
+      if (Hp .lt. pblh) then
+        alpha     = 0.24
+        beta      = 170
+        gama      = 0.35
+        delta     = 0.6
+        !logfrp = (1 / gama / exp(-delta*NFT_sq/N0_sq) ) * log( (Hp - alpha * pblh)/beta ) + log(Pf0)
+        frp = exp((1 / gama / exp(-delta*NFT_sq/N0_sq) ) * log( (Hp - alpha * pblh)/beta )) * Pf0
+      else
+        alpha     = 0.93
+        beta      = 298
+        gama      = 0.13
+        delta     = 0.7
+        !logfrp = (1 / gama / exp(-delta*NFT_sq/N0_sq) ) * log( (Hp - alpha * pblh)/beta ) + log(Pf0)
+        frp = exp((1 / gama / exp(-delta*NFT_sq/N0_sq) ) * log( (Hp - alpha * pblh)/beta )) * Pf0
+      end if
+
+      print *, "The height of fire plume (m) is: ", Hp
+      print *, "the frp for the fire plume (m) is: ", frp
+
+    end subroutine plumeRiseSofiev_inverse
+
+    
 
 end module plumerise_sofiev_mod
+
