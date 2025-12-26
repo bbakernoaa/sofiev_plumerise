@@ -40,7 +40,7 @@ class UFSCATChemFireGenerator:
         # Perform 2D binned statistics
         frp_sum_4km = binned_statistic_2d(lats_flat.flatten(), lons_flat.flatten(), frp_flat, statistic='sum', bins=[lat_bins, lon_bins]).statistic
         lai_4km = binned_statistic_2d(lats_flat.flatten(), lons_flat.flatten(), lai_flat, statistic='mean', bins=[lat_bins, lon_bins]).statistic
-        igbp_4km = binned_statistic_2d(lats_flat.flatten(), lons_flat.flatten(), igbp_flat, statistic=(lambda x: mode(x, keepdims=False)[0]), bins=[lat_bins, lon_bins]).statistic
+        igbp_4km = binned_statistic_2d(lats_flat.flatten(), lons_flat.flatten(), igbp_flat, statistic=(lambda x: mode(x, keepdims=True).mode.squeeze()), bins=[lat_bins, lon_bins]).statistic
 
         # Normalize FRP
         R = 6371.0
