@@ -107,13 +107,13 @@ class UFSCATChemFireGenerator:
         print("Training XGBoost with Monotonic Constraints...")
         # Features: [vpd(+), soil(-), lai(+), memory(-), month(0), igbp(0)]
         features = ['vpd_anom', 'soil_anom', 'lai_anom', 'memory', 'month', 'igbp']
-        constraints = (1, -1, 1, -1, 0, 0)
+        monotone_constraint_values = (1, -1, 1, -1, 0, 0)
 
         model = xgb.XGBRegressor(
             n_estimators=1000,
             max_depth=6,
             learning_rate=0.03,
-            monotone_constraints=str(constraints),
+            monotone_constraints=str(monotone_constraint_values),
             tree_method="hist",
             reg_lambda=1.5
         )
