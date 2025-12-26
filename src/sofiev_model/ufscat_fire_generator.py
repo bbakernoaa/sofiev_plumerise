@@ -161,7 +161,10 @@ class UFSCATChemFireGenerator:
                 })
 
                 preds = model.predict(batch[['vpd_anom', 'soil_anom', 'lai_anom', 'memory', 'month', 'igbp']])
-                lut[i_idx, m_idx, :, :, :, :] = preds.reshape(10, 10, 15, 15)
+                # Reshape predictions to match meshgrid order (vpd, soil, lai, memory),
+                # then transpose to match LUT order (memory, lai, soil, vpd).
+                preds_reshaped = preds.reshape(15, 15, 10, 10)
+                lut[i_idx, m_idx, :, :, :, :] = np.transpose(preds_reshaped, (3, 2, 1, 0))
 
         lut.tofile(filename)
         print(f"Export Complete! Binary file saved to: {os.path.abspath(filename)}")
