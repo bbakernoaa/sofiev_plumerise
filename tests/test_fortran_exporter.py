@@ -1,4 +1,3 @@
-import pytest
 import os
 import pandas as pd
 from sofiev_model.fortran_exporter import export_fortran_lut
