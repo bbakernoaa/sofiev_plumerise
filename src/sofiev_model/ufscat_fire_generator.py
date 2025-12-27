@@ -95,9 +95,9 @@ class UFSCATChemFireGenerator:
             'igbp': ds['IGBP']
         })
 
-        ds_out['month'] = ('time', ds['time.month'].values)
-
         df = ds_out.to_dataframe().dropna()
+        # Explicitly add month from the 'time' index level
+        df['month'] = df.index.get_level_values('time').month
         return df
 
     def train_xgboost(self, df):
