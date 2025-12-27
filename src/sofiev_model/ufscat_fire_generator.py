@@ -115,7 +115,8 @@ class UFSCATChemFireGenerator:
             learning_rate=0.03,
             monotone_constraints=str(monotone_constraint_values),
             tree_method="hist",
-            reg_lambda=1.5
+            reg_lambda=1.5,
+            early_stopping_rounds=50
         )
 
         # Time-series split: use last 15% for early stopping
@@ -128,7 +129,6 @@ class UFSCATChemFireGenerator:
         model.fit(
             X_train, y_train,
             eval_set=[(X_val, y_val)],
-            early_stopping_rounds=50,
             verbose=False
         )
         return model
@@ -168,4 +168,4 @@ class UFSCATChemFireGenerator:
 
         lut.tofile(filename)
         print(f"Export Complete! Binary file saved to: {os.path.abspath(filename)}")
-        print(f"Fortran Shape: (15, 15, 10, 10, 12, 17)")
+        print("Fortran Shape: (15, 15, 10, 10, 12, 17)")

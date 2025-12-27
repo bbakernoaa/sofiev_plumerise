@@ -28,6 +28,11 @@ jobs:
       - name: Lint with ruff
         run: ruff check .
 
+      - name: Lint Fortran code
+        run: |
+          pip install fprettify
+          fprettify --check --recursive src/fortran
+
       - name: Configure and build Fortran code
         run: |
           mkdir build
