@@ -1,47 +1,45 @@
-name: CI
+name: Python and Fortran CI
 
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+on: [push, pull_request]
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11"]
 
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v3
-      with:
-        python-version: '3.10'
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
 
-    - name: Install Python dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e .
-        pip install pytest
-        pip install fprettify
-        pip install ruff
+      - name: Install Fortran compiler
+        run: sudo apt-get update && sudo apt-get install -y gfortran
 
-    - name: Lint Python code
-      run: ruff check src/ tests/
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install .[dev]
 
-    - name: Lint Fortran code
-      run: fprettify --diff --recursive src/fortran
+      - name: Lint with ruff
+        run: ruff check .
 
-    - name: Install Fortran compiler
-      run: sudo apt-get update && sudo apt-get install -y gfortran
+      - name: Lint Fortran code
+        run: |
+          pip install fprettify
+          fprettify --diff --recursive src/fortran
 
-    - name: Build Fortran code
-      run: |
-        mkdir build
-        cd build
-        cmake ..
-        make
-        cd ..
+      - name: Configure and build Fortran code
+        run: |
+          rm -rf build
+          mkdir build
+          cd build
+          cmake ..
+          make
 
-    - name: Run Python tests
-      run: pytest tests/
+      - name: Test with pytest
+        run: pytest

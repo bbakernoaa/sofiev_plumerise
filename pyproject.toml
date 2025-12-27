@@ -11,6 +11,14 @@ dependencies = [
     "pandas",
     "scipy",
     "numpy",
+    "scikit-learn",
+    "s3fs",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "pytest",
 ]
 
 [tool.setuptools.packages.find]
