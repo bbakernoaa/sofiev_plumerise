@@ -31,7 +31,7 @@ jobs:
       - name: Lint Fortran code
         run: |
           pip install fprettify
-          fprettify --check --recursive src/fortran
+          fprettify --diff --recursive src/fortran
 
       - name: Configure and build Fortran code
         run: |
