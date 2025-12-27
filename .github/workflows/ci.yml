@@ -35,6 +35,7 @@ jobs:
 
       - name: Configure and build Fortran code
         run: |
+          rm -rf build
           mkdir build
           cd build
           cmake ..
