@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "sofiev_plume_model"
 version = "0.1.0"
 dependencies = [
+    "dask",
     "xgboost",
     "xarray",
     "pandas",
@@ -13,8 +14,6 @@ dependencies = [
     "numpy",
     "scikit-learn",
     "s3fs",
-    "dask",
-    "netcdf4",
 ]
 
 [project.optional-dependencies]
