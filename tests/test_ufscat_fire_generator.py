@@ -1,100 +1,121 @@
+import os
 import pytest
 import numpy as np
 import xarray as xr
 import pandas as pd
-from sofiev_model.ufscat_fire_generator import UFSCATChemFireGenerator
+import xgboost as xgb
+from sofiev_model.ufscat_fire_generator import FireEmissionGenerator
 
-@pytest.fixture
-def fire_generator_instance():
-    """Provides a UFSCATChemFireGenerator instance for testing."""
-    return UFSCATChemFireGenerator(target_res=1.0) # Coarse resolution for speed
+# Helper function to create a dummy XGBoost model file
+@pytest.fixture(scope="module")
+def xgb_model_path(tmpdir_factory):
+    """Creates a dummy XGBoost model file for testing."""
+    model_path = str(tmpdir_factory.mktemp("data").join("test_model.json"))
+    model = xgb.XGBRegressor(objective='reg:squarederror', n_estimators=1)
+    # Create dummy data to fit the model
+    X = np.random.rand(10, 6)
+    y = np.random.rand(10)
+    model.fit(X, y)
+    model.get_booster().save_model(model_path)
+    return model_path
 
-@pytest.fixture
-def mock_satellite_data():
-    """Creates mock satellite data for testing."""
-    lats = np.arange(40, 42, 0.5)
-    lons = np.arange(-106, -104, 0.5)
-    time = pd.to_datetime(['2023-01-01', '2023-02-01'])
-    return xr.Dataset(
-        {
-            'FRP': (('lat', 'lon', 'time'), np.random.rand(len(lats), len(lons), len(time)) * 100),
-            'LAI': (('lat', 'lon', 'time'), np.random.rand(len(lats), len(lons), len(time)) * 5),
-            'IGBP': (('lat', 'lon'), np.random.randint(1, 17, size=(len(lats), len(lons)))),
-        },
-        coords={'lat': lats, 'lon': lons, 'time': time}
+# Helper function to create a dummy climatology file
+@pytest.fixture(scope="module")
+def climo_path(tmpdir_factory):
+    """Creates a dummy climatology NetCDF file."""
+    climo_file = str(tmpdir_factory.mktemp("data").join("climo.nc"))
+    ds = xr.Dataset(
+        {'emissions': (('month', 'lat', 'lon'), np.ones((12, 180, 360)))},
+        coords={
+            'month': np.arange(1, 13),
+            'lat': np.linspace(-89.5, 89.5, 180),
+            'lon': np.linspace(-179.5, 179.5, 360)
+        }
     )
+    ds.to_netcdf(climo_file)
+    return climo_file
 
-@pytest.fixture
-def mock_met_data(fire_generator_instance):
-    """Creates mock meteorology data for testing."""
-    lats = fire_generator_instance.target_lats
-    lons = fire_generator_instance.target_lons
-    time = pd.to_datetime(['2023-01-01', '2023-02-01'])
-    return xr.Dataset(
-        {
-            'vpd': (('lat', 'lon', 'time'), np.random.rand(len(lats), len(lons), len(time)) * 30),
-            'soil_m': (('lat', 'lon', 'time'), np.random.rand(len(lats), len(lons), len(time)) * 0.5),
-        },
-        coords={'lat': lats, 'lon': lons, 'time': time}
+def test_fire_emission_generator_init(xgb_model_path, climo_path):
+    """Test the initialization of the FireEmissionGenerator."""
+    generator = FireEmissionGenerator(model_path=xgb_model_path, climo_path=climo_path, target_res=1.0)
+    assert isinstance(generator.model, xgb.XGBRegressor)
+    assert isinstance(generator.climo, xr.Dataset)
+    assert 'emissions' in generator.climo
+    # Check if climatology is loaded lazily
+    assert generator.climo.chunks is not None
+
+def test_run_step(xgb_model_path, climo_path, tmpdir):
+    """Test the core run_step method."""
+    # 1. Setup
+    # Create a local climo file with correct dimensions for this test
+    local_climo_path = str(tmpdir.join("local_climo.nc"))
+    ds = xr.Dataset(
+        {'emissions': (('month', 'lat', 'lon'), np.ones((12, 2, 2)))},
+        coords={
+            'month': np.arange(1, 13),
+            'lat': np.array([40.0, 41.0]),
+            'lon': np.array([-100.0, -99.0])
+        }
     )
+    ds.to_netcdf(local_climo_path)
 
-def test_initialization(fire_generator_instance):
-    """Tests if the class initializes correctly."""
-    assert fire_generator_instance.res == 1.0
-    assert len(fire_generator_instance.target_lats) > 0
-    assert len(fire_generator_instance.target_lons) > 0
+    generator = FireEmissionGenerator(model_path=xgb_model_path, climo_path=local_climo_path, target_res=1.0)
 
-def test_aggregate_raw_data(fire_generator_instance, mock_satellite_data):
-    """Tests the aggregation functionality."""
-    ds_4km = fire_generator_instance.aggregate_raw_data(mock_satellite_data.isel(time=0))
-    assert 'FRP' in ds_4km
-    assert 'LAI' in ds_4km
-    assert 'IGBP' in ds_4km
-    assert ds_4km.FRP.shape == (len(fire_generator_instance.target_lats), len(fire_generator_instance.target_lons))
+    # 2. Create mock inputs
+    coords = {
+        'time': [pd.Timestamp('2023-01-01')],
+        'lat': np.array([40.0, 41.0]),
+        'lon': np.array([-100.0, -99.0])
+    }
+    dims = ('time', 'lat', 'lon')
 
-def test_generate_features(fire_generator_instance, mock_satellite_data, mock_met_data):
-    """
-    Tests the feature generation functionality, ensuring it uses the output
-    from the aggregation step.
-    """
-    # 1. Run aggregation for each time slice
-    ds_4km_slices = [fire_generator_instance.aggregate_raw_data(mock_satellite_data.isel(time=t))
-                     for t in range(len(mock_satellite_data.time))]
-    ds_4km_time = xr.concat(ds_4km_slices, dim=mock_satellite_data.time)
+    ufs_met = xr.Dataset({
+        't2m': (dims, np.full((1, 2, 2), 293.15)), # 20C
+        'rh2m': (dims, np.full((1, 2, 2), 50.0)),
+        'u10': (dims, np.full((1, 2, 2), 5.0)),
+        'v10': (dims, np.full((1, 2, 2), 5.0)),
+        'precip': (dims, np.full((1, 2, 2), 0.1)),
+    }, coords=coords)
 
-    # 2. Generate features using the aggregated data and mock meteorology
-    df = fire_generator_instance.generate_features(ds_4km_time, mock_met_data)
+    prev_states = xr.Dataset({
+        'ffmc': (('lat', 'lon'), np.full((2, 2), 85.0)),
+        'dmc': (('lat', 'lon'), np.full((2, 2), 50.0)),
+        'dc': (('lat', 'lon'), np.full((2, 2), 300.0)),
+    }, coords={'lat': coords['lat'], 'lon': coords['lon']})
 
-    # 3. Validate the output
-    assert not df.empty
-    expected_cols = ['target', 'vpd_anom', 'soil_anom', 'lai_anom', 'memory', 'month', 'igbp']
-    for col in expected_cols:
-        assert col in df.columns
+    memory_grid = xr.DataArray(np.zeros((2, 2)), coords={'lat': coords['lat'], 'lon': coords['lon']}, name='frp_memory')
+    igbp_map = xr.DataArray(np.full((2, 2), 4), coords={'lat': coords['lat'], 'lon': coords['lon']}, name='igbp_class')
 
-    # Check if the index is a MultiIndex with time, lat, lon
-    assert isinstance(df.index, pd.MultiIndex)
-    assert 'time' in df.index.names
-    assert 'lat' in df.index.names
-    assert 'lon' in df.index.names
+    # 3. Execute
+    emissions, new_states = generator.run_step(ufs_met.isel(time=0), prev_states, memory_grid, igbp_map)
 
-def test_train_xgboost_and_export(fire_generator_instance, tmp_path):
-    """Tests the training and export functionality."""
-    # Create a simple dataframe for training
-    df = pd.DataFrame({
-        'vpd_anom': np.random.rand(100),
-        'soil_anom': np.random.rand(100),
-        'lai_anom': np.random.rand(100),
-        'memory': np.random.rand(100),
-        'month': np.random.randint(1, 13, 100),
-        'igbp': np.random.randint(1, 17, 100),
-        'target': np.random.rand(100)
-    })
+    # 4. Verify outputs
+    assert isinstance(emissions, xr.DataArray)
+    assert isinstance(new_states, xr.Dataset)
 
-    model = fire_generator_instance.train_xgboost(df)
-    assert model is not None
+    # Check coordinates and dimensions
+    assert 'lat' in emissions.coords and 'lon' in emissions.coords
+    assert emissions.shape == (2, 2)
+    assert set(new_states.data_vars) == {'ffmc', 'dmc', 'dc'}
+    assert new_states['ffmc'].shape == (2, 2)
 
-    # Test export
-    output_file = tmp_path / "test_lut.bin"
-    fire_generator_instance.export_binary_lut(model, filename=str(output_file))
-    assert output_file.exists()
-    assert output_file.stat().st_size > 0
+    # Check for provenance attribute
+    assert 'history' in emissions.attrs
+    assert "UFSCATChemFireGenerator" in emissions.attrs['history']
+
+def test_save_load_state(tmpdir, xgb_model_path, climo_path):
+    """Test saving and loading the FWI state."""
+    generator = FireEmissionGenerator(model_path=xgb_model_path, climo_path=climo_path)
+    state_file = str(tmpdir.join("fwi_state.nc"))
+
+    original_state = xr.Dataset({
+        'ffmc': (('lat', 'lon'), np.random.rand(10, 10)),
+        'dmc': (('lat', 'lon'), np.random.rand(10, 10)),
+        'dc': (('lat', 'lon'), np.random.rand(10, 10)),
+    }, coords={'lat': np.arange(10), 'lon': np.arange(10)})
+
+    generator.save_state(original_state, state_file)
+    assert os.path.exists(state_file)
+
+    loaded_state = generator.load_state(state_file)
+    xr.testing.assert_allclose(original_state, loaded_state)
