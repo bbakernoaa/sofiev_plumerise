@@ -1,7 +1,4 @@
 import os
-import datetime
-from typing import Dict, Tuple
-
 import numpy as np
 import xarray as xr
 import pandas as pd
@@ -11,45 +8,29 @@ from scipy.ndimage import gaussian_filter
 # Import your rigorous vectorized routines
 from .cffwi import FWI_Engine_Vectorized
 
-
 class FireEmissionGenerator:
-    """
-    Generates daily fire emissions by scaling a climatology with an ML model.
-
-    This class integrates a trained XGBoost model with the Canadian Forest
-    Fire Weather Index (FWI) system to produce daily, high-resolution
-    estimates of fire emissions suitable for atmospheric chemistry models.
-
-    Parameters
-    ----------
-    model_path : str
-        Path to the trained XGBoost model file (.json or .model).
-    climo_path : str
-        Path to the GBBEPx climatology NetCDF file. This file should contain
-        a variable 'emissions' with dimensions (month, lat, lon).
-    target_res : float, optional
-        The target resolution in decimal degrees for the output grid.
-        Default is 0.04, approximately 4km.
-
-    Attributes
-    ----------
-    res : float
-        Grid resolution in degrees.
-    target_lats : np.ndarray
-        Latitude coordinates for the target grid.
-    target_lons : np.ndarray
-        Longitude coordinates for the target grid.
-    fwi_engine : FWI_Engine_Vectorized
-        An instance of the vectorized FWI calculation engine.
-    model : xgb.XGBRegressor
-        The loaded XGBoost regressor model.
-    climo : xr.Dataset
-        The loaded GBBEPx climatology, opened with dask chunks for lazy loading.
-    """
     def __init__(self, model_path: str, climo_path: str, target_res: float = 0.04):
+        """UFS/CATChem Fire Generator for RISE.
+
+        This class orchestrates the calculation of biomass burning emissions by
+        integrating meteorological data, a fuel climatology, and a trained
+        machine learning model to produce daily scaling factors.
+
+        Parameters
+        ----------
+        model_path : str
+            Path to the trained XGBoost .json or .model file.
+        climo_path : str
+            Path to the aggregated GBBEPx climatology NetCDF file. This file
+            is expected to contain a monthly emission climatology.
+        target_res : float, optional
+            Target resolution in degrees for the output grid, by default 0.04,
+            approximating a 4km grid spacing.
+
+        """
         self.res = target_res
-        self.target_lats = np.arange(-90 + self.res/2, 90, self.res)
-        self.target_lons = np.arange(-180 + self.res/2, 180, self.res)
+        self.target_lats = np.arange(-90 + self.res / 2, 90, self.res)
+        self.target_lons = np.arange(-180 + self.res / 2, 180, self.res)
 
         # Initialize FWI Engine
         self.fwi_engine = FWI_Engine_Vectorized()
@@ -60,15 +41,14 @@ class FireEmissionGenerator:
         self.model = xgb.XGBRegressor()
         self.model.load_model(model_path)
 
-        # Load the GBBEPx Climatology lazily using dask
-        self.climo = xr.open_dataset(climo_path, chunks="auto")
+        # Load the GBBEPx Climatology lazily with Dask
+        self.climo = xr.open_dataset(climo_path, chunks={'lat': 512, 'lon': 512})
 
     def calculate_vpd(self, t2m: np.ndarray, rh2m: np.ndarray) -> np.ndarray:
-        """
-        Calculate Vapor Pressure Deficit (VPD).
+        """Calculate Vapor Pressure Deficit (VPD).
 
-        Uses the Tetens equation to derive saturated vapor pressure from
-        2-meter temperature and relative humidity.
+        This method uses the Tetens equation to estimate saturated vapor
+        pressure from temperature.
 
         Parameters
         ----------
@@ -87,25 +67,21 @@ class FireEmissionGenerator:
         es = 6.112 * np.exp((17.67 * t_c) / (t_c + 243.5))
         return es * (1.0 - rh2m / 100.0)
 
-    def get_fire_memory(self, history_ds: xr.Dataset, current_time: pd.Timestamp) -> np.ndarray:
-        """
-        Calculate a 6-month cumulative Fire Radiative Power (FRP) memory.
-
-        This serves as a proxy for fuel depletion, reducing fire intensity in
-        areas that have recently burned.
+    def get_fire_memory(self, history_ds: xr.Dataset, current_time: pd.Timestamp) -> xr.DataArray:
+        """Calculate 6-month cumulative FRP for biomass depletion.
 
         Parameters
         ----------
         history_ds : xr.Dataset
-            An xarray Dataset containing a time-series of previously
-            generated 'FRP' emissions.
+            Time-series of previously generated FRP emissions. Must have a
+            'time' coordinate.
         current_time : pd.Timestamp
-            The current timestamp for the simulation step.
+            The current timestamp for the model run.
 
         Returns
         -------
-        np.ndarray
-            A 2D numpy array of cumulative FRP over the last 6 months.
+        xr.DataArray
+            A 2D DataArray of cumulative FRP over the last 6 months.
         """
         six_months_ago = current_time - pd.DateOffset(months=6)
         # Select and sum emissions history
@@ -123,40 +99,42 @@ class FireEmissionGenerator:
         Parameters
         ----------
         ufs_met : xr.Dataset
-            An xarray Dataset containing the current day's meteorological
-            drivers (t2m, rh2m, u10, v10, precip).
-        prev_states : dict
-            A dictionary containing the previous day's FWI moisture codes,
-            with keys 'ffmc', 'dmc', and 'dc'.
-        memory_grid : np.ndarray
-            A 2D array of the 6-month cumulative FRP (fire memory).
-        igbp_map : np.ndarray
-            A 2D array of IGBP land cover classes.
+            Current UFS meteorology. Must contain `t2m`, `rh2m`, `u10`, `v10`,
+            and `precip` as DataArrays.
+        prev_states : xr.Dataset
+            Dataset of 2D arrays for `ffmc`, `dmc`, and `dc` from the
+            previous day.
+        memory_grid : xr.DataArray
+            2D array of cumulative FRP (6-month lag).
+        igbp_map : xr.DataArray
+            2D array of IGBP land cover classes.
 
         Returns
         -------
-        tuple[np.ndarray, dict]
-            A tuple containing:
-            - final_emissions (np.ndarray): The scaled emissions field.
-            - new_states (dict): The updated FWI moisture codes for the next day.
+        tuple[xr.DataArray, xr.Dataset]
+            - The final scaled emissions as a 2D DataArray, preserving
+              coordinates and including a history attribute.
+            - An updated xr.Dataset containing the new FWI moisture codes
+              (`ffmc`, `dmc`, `dc`).
         """
         # 1. Parse Time
         current_dt = pd.to_datetime(ufs_met.time.values.item())
         month = current_dt.month
 
         # 2. Update FWI Moisture Codes via ccfwi.py
-        wind_speed = np.sqrt(ufs_met['u10'].squeeze().values**2 + ufs_met['v10'].squeeze().values**2)
+        wind_speed = np.sqrt(ufs_met['u10']**2 + ufs_met['v10']**2)
         new_ffmc = self.fwi_engine.calculate_ffmc(
-            ufs_met['t2m'].squeeze().values, ufs_met['rh2m'].squeeze().values,
-            wind_speed, ufs_met['precip'].squeeze().values, prev_states['ffmc']
+            ufs_met['t2m'].values, ufs_met['rh2m'].values,
+            wind_speed.values, ufs_met['precip'].values,
+            prev_states['ffmc'].values
         )
         new_dmc = self.fwi_engine.calculate_dmc(
-            ufs_met['t2m'].squeeze().values, ufs_met['rh2m'].squeeze().values,
-            ufs_met['precip'].squeeze().values, prev_states['dmc'], month
+            ufs_met['t2m'].values, ufs_met['rh2m'].values,
+            ufs_met['precip'].values, prev_states['dmc'].values, month
         )
         new_dc = self.fwi_engine.calculate_dc(
-            ufs_met['t2m'].squeeze().values, ufs_met['precip'].squeeze().values,
-            prev_states['dc'], month
+            ufs_met['t2m'].values, ufs_met['precip'].values,
+            prev_states['dc'].values, month
         )
 
         # 3. Calculate Behavioral Indices
@@ -166,17 +144,17 @@ class FireEmissionGenerator:
         vpd = self.calculate_vpd(ufs_met['t2m'].values, ufs_met['rh2m'].values)
 
         # 5. ML Scaling
-        # Feature vector alignment matches model training order
+        # Feature vector alignment: [DC, BUI, Wind, VPD, Memory, IGBP]
         X = np.stack([
             new_dc.ravel(),
             bui.ravel(),
-            wind_speed.ravel(),
+            wind_speed.values.ravel(),
             vpd.ravel(),
-            memory_grid.ravel(),
-            igbp_map.ravel()
+            memory_grid.values.ravel(),
+            igbp_map.values.ravel()
         ], axis=1)
 
-        # Predict scaling factor
+        # Predict scaling factor and reshape
         raw_scale = self.model.predict(X).reshape(new_dc.shape)
 
         # 6. Post-processing: Gaussian smoothing and clipping
@@ -184,61 +162,37 @@ class FireEmissionGenerator:
         smooth_scale = np.clip(smooth_scale, 0.01, 20.0)
 
         # 7. Apply to Base Climatology
-        base_emissions = self.climo['emissions'].sel(month=month).squeeze().values
-        final_emissions = base_emissions * smooth_scale
+        base_emissions = self.climo['emissions'].sel(month=month).values
+        final_emissions_np = base_emissions * smooth_scale
 
-        new_states = {
-            'ffmc': new_ffmc,
-            'dmc': new_dmc,
-            'dc': new_dc
-        }
-
-        return final_emissions, new_states
-
-    def save_state(self, states: Dict[str, np.ndarray], filename: str) -> None:
-        """
-        Save FWI moisture codes to a NetCDF file for restart capability.
-
-        Includes data provenance by writing a history attribute.
-
-        Parameters
-        ----------
-        states : dict
-            A dictionary of 2D numpy arrays representing the FWI moisture
-            codes ('ffmc', 'dmc', 'dc').
-        filename : str
-            The path for the output NetCDF file.
-        """
-        ds = xr.Dataset(
-            {
-                'ffmc': (['lat', 'lon'], states['ffmc']),
-                'dmc': (['lat', 'lon'], states['dmc']),
-                'dc': (['lat', 'lon'], states['dc'])
-            },
-            coords={'lat': self.target_lats, 'lon': self.target_lons}
+        # 8. Format Output
+        # Preserve coordinates and add history
+        final_emissions = xr.DataArray(
+            final_emissions_np,
+            coords=ufs_met.coords,
+            dims=ufs_met['t2m'].dims,
+            name='emissions'
         )
-        ds.attrs["history"] = f"Created by Aero on {datetime.datetime.utcnow()} UTC"
-        ds.to_netcdf(filename)
+        history_log = (
+            f"{pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}: "
+            f"Fire emissions generated with UFSCATChemFireGenerator."
+        )
+        final_emissions.attrs['history'] = history_log
 
-    def load_state(self, filename: str) -> Dict[str, np.ndarray]:
-        """
-        Load FWI moisture codes from a previous day's output file.
+        new_states_ds = xr.Dataset({
+            'ffmc': (('lat', 'lon'), new_ffmc),
+            'dmc': (('lat', 'lon'), new_dmc),
+            'dc': (('lat', 'lon'), new_dc)
+        }, coords=ufs_met.coords)
 
-        Uses dask for lazy loading to handle large state files efficiently.
+        return final_emissions, new_states_ds
 
-        Parameters
-        ----------
-        filename : str
-            The path to the input NetCDF state file.
+    def save_state(self, states: xr.Dataset, filename: str) -> None:
+        """Saves FWI moisture codes to NetCDF for restart capability."""
+        states.to_netcdf(filename)
 
-        Returns
-        -------
-        dict
-            A dictionary of FWI moisture codes ('ffmc', 'dmc', 'dc').
-        """
-        with xr.open_dataset(filename, chunks="auto") as ds:
-            return {
-                'ffmc': ds['ffmc'].values,
-                'dmc': ds['dmc'].values,
-                'dc': ds['dc'].values
-            }
+    def load_state(self, filename: str) -> xr.Dataset:
+        """Loads FWI moisture codes from a previous day's output."""
+        return xr.open_dataset(filename)
+
+# --- END OF FILE ---
