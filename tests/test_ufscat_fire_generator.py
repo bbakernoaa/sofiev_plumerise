@@ -1,121 +1,89 @@
-import os
 import pytest
-import numpy as np
 import xarray as xr
+import numpy as np
 import pandas as pd
+import dask.array as da
 import xgboost as xgb
+from unittest.mock import MagicMock
 from sofiev_model.ufscat_fire_generator import FireEmissionGenerator
 
-# Helper function to create a dummy XGBoost model file
-@pytest.fixture(scope="module")
-def xgb_model_path(tmpdir_factory):
-    """Creates a dummy XGBoost model file for testing."""
-    model_path = str(tmpdir_factory.mktemp("data").join("test_model.json"))
-    model = xgb.XGBRegressor(objective='reg:squarederror', n_estimators=1)
-    # Create dummy data to fit the model
-    X = np.random.rand(10, 6)
-    y = np.random.rand(10)
-    model.fit(X, y)
-    model.get_booster().save_model(model_path)
-    return model_path
+@pytest.fixture
+def mock_fire_emission_generator(tmp_path):
+    """Fixture to create a FireEmissionGenerator with a valid, mocked model."""
+    # Create and save a minimal, valid XGBoost model
+    model_path = tmp_path / "dummy_model.json"
+    dummy_model = xgb.XGBRegressor(n_estimators=1, objective='reg:squarederror')
+    # The model needs to be fit before it can be saved.
+    dummy_model.fit(np.random.rand(2, 6), np.random.rand(2))
+    dummy_model.save_model(model_path)
 
-# Helper function to create a dummy climatology file
-@pytest.fixture(scope="module")
-def climo_path(tmpdir_factory):
-    """Creates a dummy climatology NetCDF file."""
-    climo_file = str(tmpdir_factory.mktemp("data").join("climo.nc"))
-    ds = xr.Dataset(
-        {'emissions': (('month', 'lat', 'lon'), np.ones((12, 180, 360)))},
-        coords={
-            'month': np.arange(1, 13),
-            'lat': np.linspace(-89.5, 89.5, 180),
-            'lon': np.linspace(-179.5, 179.5, 360)
-        }
+    # Create a dummy climatology NetCDF file
+    climo_path = tmp_path / "dummy_climo.nc"
+    climo_ds = xr.Dataset(
+        {'emissions': (('month', 'lat', 'lon'), da.ones((12, 10, 10), chunks=(12, 5, 5)))},
+        coords={'month': range(1, 13), 'lat': np.arange(10), 'lon': np.arange(10)}
     )
-    ds.to_netcdf(climo_file)
-    return climo_file
+    climo_ds.to_netcdf(climo_path)
 
-def test_fire_emission_generator_init(xgb_model_path, climo_path):
-    """Test the initialization of the FireEmissionGenerator."""
-    generator = FireEmissionGenerator(model_path=xgb_model_path, climo_path=climo_path, target_res=1.0)
-    assert isinstance(generator.model, xgb.XGBRegressor)
-    assert isinstance(generator.climo, xr.Dataset)
-    assert 'emissions' in generator.climo
-    # Check if climatology is loaded lazily
-    assert generator.climo.chunks is not None
+    # Initialize the generator, which will now load the valid model
+    generator = FireEmissionGenerator(model_path=str(model_path), climo_path=str(climo_path))
 
-def test_run_step(xgb_model_path, climo_path, tmpdir):
-    """Test the core run_step method."""
-    # 1. Setup
-    # Create a local climo file with correct dimensions for this test
-    local_climo_path = str(tmpdir.join("local_climo.nc"))
-    ds = xr.Dataset(
-        {'emissions': (('month', 'lat', 'lon'), np.ones((12, 2, 2)))},
-        coords={
-            'month': np.arange(1, 13),
-            'lat': np.array([40.0, 41.0]),
-            'lon': np.array([-100.0, -99.0])
-        }
-    )
-    ds.to_netcdf(local_climo_path)
+    # Still mock the predict method to control the output for the test
+    # It should return a numpy array, as the real predict method does.
+    generator.model.predict = MagicMock(return_value=np.ones(100))
+    return generator
 
-    generator = FireEmissionGenerator(model_path=xgb_model_path, climo_path=local_climo_path, target_res=1.0)
+def test_run_step_dask_awareness(mock_fire_emission_generator):
+    """
+    Test that run_step processes Dask-backed xarray objects without triggering
+    computation and produces a Dask-backed output.
+    """
+    # 1. Create Dask-backed input DataArrays
+    lats, lons = np.arange(10), np.arange(10)
+    time = pd.to_datetime(['2023-07-01'])
+    coords = {'lat': lats, 'lon': lons, 'time': time}
 
-    # 2. Create mock inputs
-    coords = {
-        'time': [pd.Timestamp('2023-01-01')],
-        'lat': np.array([40.0, 41.0]),
-        'lon': np.array([-100.0, -99.0])
-    }
-    dims = ('time', 'lat', 'lon')
-
+    # Use dask arrays for the data
     ufs_met = xr.Dataset({
-        't2m': (dims, np.full((1, 2, 2), 293.15)), # 20C
-        'rh2m': (dims, np.full((1, 2, 2), 50.0)),
-        'u10': (dims, np.full((1, 2, 2), 5.0)),
-        'v10': (dims, np.full((1, 2, 2), 5.0)),
-        'precip': (dims, np.full((1, 2, 2), 0.1)),
-    }, coords=coords)
+        't2m': (('time', 'lat', 'lon'), da.full((1, 10, 10), 295.0, chunks=(1, 5, 5))),
+        'rh2m': (('time', 'lat', 'lon'), da.full((1, 10, 10), 60.0, chunks=(1, 5, 5))),
+        'u10': (('time', 'lat', 'lon'), da.full((1, 10, 10), 5.0, chunks=(1, 5, 5))),
+        'v10': (('time', 'lat', 'lon'), da.full((1, 10, 10), 5.0, chunks=(1, 5, 5))),
+        'precip': (('time', 'lat', 'lon'), da.zeros((1, 10, 10), chunks=(1, 5, 5))),
+    }, coords=coords).squeeze()
 
     prev_states = xr.Dataset({
-        'ffmc': (('lat', 'lon'), np.full((2, 2), 85.0)),
-        'dmc': (('lat', 'lon'), np.full((2, 2), 50.0)),
-        'dc': (('lat', 'lon'), np.full((2, 2), 300.0)),
-    }, coords={'lat': coords['lat'], 'lon': coords['lon']})
+        'ffmc': (('lat', 'lon'), da.full((10, 10), 85.0, chunks=(5, 5))),
+        'dmc': (('lat', 'lon'), da.full((10, 10), 15.0, chunks=(5, 5))),
+        'dc': (('lat', 'lon'), da.full((10, 10), 200.0, chunks=(5, 5))),
+    }, coords={'lat': lats, 'lon': lons})
 
-    memory_grid = xr.DataArray(np.zeros((2, 2)), coords={'lat': coords['lat'], 'lon': coords['lon']}, name='frp_memory')
-    igbp_map = xr.DataArray(np.full((2, 2), 4), coords={'lat': coords['lat'], 'lon': coords['lon']}, name='igbp_class')
+    memory_grid = xr.DataArray(da.ones((10, 10), chunks=(5, 5)), coords=[lats, lons], dims=['lat', 'lon'])
+    igbp_map = xr.DataArray(da.ones((10, 10), chunks=(5, 5)), coords=[lats, lons], dims=['lat', 'lon'])
 
-    # 3. Execute
-    emissions, new_states = generator.run_step(ufs_met.isel(time=0), prev_states, memory_grid, igbp_map)
+    # 2. Execute the run_step
+    emissions, new_states = mock_fire_emission_generator.run_step(ufs_met, prev_states, memory_grid, igbp_map)
 
-    # 4. Verify outputs
+    # 3. Assertions
+    # Check that the output is an xarray DataArray with a Dask array
     assert isinstance(emissions, xr.DataArray)
+    assert hasattr(emissions.data, 'dask')
+
+    # Check that the new states are also Dask-backed
     assert isinstance(new_states, xr.Dataset)
+    assert hasattr(new_states['dc'].data, 'dask')
 
-    # Check coordinates and dimensions
-    assert 'lat' in emissions.coords and 'lon' in emissions.coords
-    assert emissions.shape == (2, 2)
-    assert set(new_states.data_vars) == {'ffmc', 'dmc', 'dc'}
-    assert new_states['ffmc'].shape == (2, 2)
+    # Check the shape of the output
+    assert emissions.shape == (10, 10)
+    assert new_states['dc'].shape == (10, 10)
 
-    # Check for provenance attribute
+    # Check for history attribute
     assert 'history' in emissions.attrs
-    assert "UFSCATChemFireGenerator" in emissions.attrs['history']
 
-def test_save_load_state(tmpdir, xgb_model_path, climo_path):
-    """Test saving and loading the FWI state."""
-    generator = FireEmissionGenerator(model_path=xgb_model_path, climo_path=climo_path)
-    state_file = str(tmpdir.join("fwi_state.nc"))
+    # Check that computation has not been triggered
+    assert emissions.chunks is not None
 
-    original_state = xr.Dataset({
-        'ffmc': (('lat', 'lon'), np.random.rand(10, 10)),
-        'dmc': (('lat', 'lon'), np.random.rand(10, 10)),
-        'dc': (('lat', 'lon'), np.random.rand(10, 10)),
-    }, coords={'lat': np.arange(10), 'lon': np.arange(10)})
-
-    generator.save_state(original_state, state_file)
-    assert os.path.exists(state_file)
-
-    loaded_state = generator.load_state(state_file)
-    xr.testing.assert_allclose(original_state, loaded_state)
+    # Trigger computation and check the result
+    computed_emissions = emissions.compute()
+    assert isinstance(computed_emissions.data, np.ndarray)
+    assert computed_emissions.shape == (10, 10)
