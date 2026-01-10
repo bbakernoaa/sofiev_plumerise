@@ -81,7 +81,7 @@ def test_run_step_dask_awareness(mock_fire_emission_generator):
     assert 'history' in emissions.attrs
 
     # Check that computation has not been triggered
-    assert not emissions.chunks is None
+    assert emissions.chunks is not None
 
     # Trigger computation and check the result
     computed_emissions = emissions.compute()
