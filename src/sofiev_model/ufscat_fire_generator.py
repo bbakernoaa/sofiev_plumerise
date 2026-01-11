@@ -4,17 +4,36 @@ import xarray as xr
 import pandas as pd
 import xgboost as xgb
 from scipy.ndimage import gaussian_filter
+from typing import Tuple
 
 # Import your rigorous vectorized routines
 from .cffwi import FWI_Engine_Vectorized
 
 class FireEmissionGenerator:
-    def __init__(self, model_path: str, climo_path: str, target_res: float = 0.04):
-        """UFS/CATChem Fire Generator for RISE.
+    """Orchestrates the calculation of biomass burning emissions.
 
-        This class orchestrates the calculation of biomass burning emissions by
-        integrating meteorological data, a fuel climatology, and a trained
-        machine learning model to produce daily scaling factors.
+    This class integrates meteorological data, a fuel climatology, and a
+    trained machine learning model to produce daily scaling factors for
+    biomass burning emissions. It is designed to be used in a daily
+    time-stepping loop, where each step produces a new emission field.
+
+    Attributes
+    ----------
+    res : float
+        The target resolution in degrees for the output grid.
+    target_lats : np.ndarray
+        The target latitudes for the output grid.
+    target_lons : np.ndarray
+        The target longitudes for the output grid.
+    fwi_engine : FWI_Engine_Vectorized
+        The vectorized FWI calculation engine.
+    model : xgb.XGBRegressor
+        The trained XGBoost model for emission scaling.
+    climo : xr.Dataset
+        The lazy-loaded GBBEPx climatology dataset.
+    """
+    def __init__(self, model_path: str, climo_path: str, target_res: float = 0.04):
+        """Initializes the FireEmissionGenerator.
 
         Parameters
         ----------
@@ -26,7 +45,6 @@ class FireEmissionGenerator:
         target_res : float, optional
             Target resolution in degrees for the output grid, by default 0.04,
             approximating a 4km grid spacing.
-
         """
         self.res = target_res
         self.target_lats = np.arange(-90 + self.res / 2, 90, self.res)
@@ -74,8 +92,14 @@ class FireEmissionGenerator:
         es = 6.112 * np.exp((17.67 * t_c) / (t_c + 243.5))
         return es * (1.0 - rh2m / 100.0)
 
-    def get_fire_memory(self, history_ds: xr.Dataset, current_time: pd.Timestamp) -> xr.DataArray:
-        """Calculate 6-month cumulative FRP for biomass depletion.
+    def get_fire_memory(
+        self, history_ds: xr.Dataset, current_time: pd.Timestamp
+    ) -> xr.DataArray:
+        """Calculates the 6-month cumulative FRP for biomass depletion.
+
+        This method integrates the fire radiative power (FRP) over the last 6
+        months to create a 'memory' field, which represents a proxy for fuel
+        depletion.
 
         Parameters
         ----------
@@ -107,9 +131,14 @@ class FireEmissionGenerator:
         memory = history_ds['FRP'].sel(time=slice(six_months_ago, current_time)).sum(dim='time')
         return memory
 
-    def run_step(self, ufs_met: xr.Dataset, prev_states: xr.Dataset,
-                 memory_grid: xr.DataArray, igbp_map: xr.DataArray) -> tuple[xr.DataArray, xr.Dataset]:
-        """Execute a single daily timestep for the global 4km grid.
+    def run_step(
+        self,
+        ufs_met: xr.Dataset,
+        prev_states: xr.Dataset,
+        memory_grid: xr.DataArray,
+        igbp_map: xr.DataArray,
+    ) -> Tuple[xr.DataArray, xr.Dataset]:
+        """Executes a single daily timestep for the global 4km grid.
 
         This is the core operational method. It takes the latest meteorological
         data and the previous day's FWI state, computes the next state, and
@@ -130,7 +159,7 @@ class FireEmissionGenerator:
 
         Returns
         -------
-        tuple[xr.DataArray, xr.Dataset]
+        Tuple[xr.DataArray, xr.Dataset]
             - The final scaled emissions as a 2D DataArray, preserving
               coordinates and including a history attribute.
             - An updated xr.Dataset containing the new FWI moisture codes
@@ -286,11 +315,30 @@ class FireEmissionGenerator:
         return final_emissions, new_states_ds
 
     def save_state(self, states: xr.Dataset, filename: str) -> None:
-        """Saves FWI moisture codes to NetCDF for restart capability."""
+        """Saves FWI moisture codes to NetCDF for restart capability.
+
+        Parameters
+        ----------
+        states : xr.Dataset
+            The FWI moisture codes to save.
+        filename : str
+            The path to the output NetCDF file.
+        """
         states.to_netcdf(filename)
 
     def load_state(self, filename: str) -> xr.Dataset:
-        """Loads FWI moisture codes from a previous day's output."""
+        """Loads FWI moisture codes from a previous day's output.
+
+        Parameters
+        ----------
+        filename : str
+            The path to the input NetCDF file.
+
+        Returns
+        -------
+        xr.Dataset
+            The loaded FWI moisture codes.
+        """
         return xr.open_dataset(filename)
 
 # --- END OF FILE ---
