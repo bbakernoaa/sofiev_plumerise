@@ -92,8 +92,9 @@ class FireEmissionGenerator:
         es = 6.112 * np.exp((17.67 * t_c) / (t_c + 243.5))
         return es * (1.0 - rh2m / 100.0)
 
+    @staticmethod
     def get_fire_memory(
-        self, history_ds: xr.Dataset, current_time: pd.Timestamp
+        history_ds: xr.Dataset, current_time: pd.Timestamp
     ) -> xr.DataArray:
         """Calculates the 6-month cumulative FRP for biomass depletion.
 
@@ -122,13 +123,15 @@ class FireEmissionGenerator:
         ...     coords={'time': time_range, 'lat': np.arange(10), 'lon': np.arange(10)}
         ... )
         >>> current_time = pd.Timestamp('2023-01-01')
-        >>> mem = FireEmissionGenerator.get_fire_memory(None, history_ds, current_time)
+        >>> mem = FireEmissionGenerator.get_fire_memory(history_ds, current_time)
         >>> mem.shape
         (10, 10)
         """
         six_months_ago = current_time - pd.DateOffset(months=6)
-        # Select and sum emissions history
-        memory = history_ds['FRP'].sel(time=slice(six_months_ago, current_time)).sum(dim='time')
+        # Select and sum emissions history. The slice end is made exclusive by
+        # subtracting a nanosecond, ensuring we only get the last 6 full months.
+        end_period = current_time - pd.Timedelta(nanoseconds=1)
+        memory = history_ds['FRP'].sel(time=slice(six_months_ago, end_period)).sum(dim='time')
         return memory
 
     def run_step(

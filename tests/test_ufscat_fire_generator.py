@@ -87,3 +87,36 @@ def test_run_step_dask_awareness(mock_fire_emission_generator):
     computed_emissions = emissions.compute()
     assert isinstance(computed_emissions.data, np.ndarray)
     assert computed_emissions.shape == (10, 10)
+
+def test_get_fire_memory():
+    """
+    Tests the static method `get_fire_memory` for correct temporal aggregation.
+    """
+    # 1. Create a sample history dataset
+    # Spans one full year with monthly frequency
+    time_range = pd.date_range('2022-01-01', '2023-01-01', freq='MS')
+    history_ds = xr.Dataset(
+        {'FRP': (('time', 'lat', 'lon'), np.ones((len(time_range), 10, 10)))},
+        coords={'time': time_range, 'lat': np.arange(10), 'lon': np.arange(10)}
+    )
+
+    # 2. Define the current time for the query
+    current_time = pd.Timestamp('2023-01-01')
+
+    # 3. Call the static method
+    memory_grid = FireEmissionGenerator.get_fire_memory(history_ds, current_time)
+
+    # 4. Define the expected result
+    # The method should sum the FRP values from the last 6 months.
+    # The time slice's upper bound is exclusive, so it sums values from
+    # July 2022 through Dec 2022. Since all values are 1, the sum should be 6.
+    expected_data = np.full((10, 10), 6.0)
+    expected_result = xr.DataArray(
+        expected_data,
+        coords={'lat': np.arange(10), 'lon': np.arange(10)},
+        dims=['lat', 'lon']
+    )
+
+    # 5. Assert that the result is correct
+    xr.testing.assert_allclose(memory_grid, expected_result)
+    assert memory_grid.shape == (10, 10)
