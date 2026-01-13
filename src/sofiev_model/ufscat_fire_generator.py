@@ -213,6 +213,138 @@ class FireEmissionGenerator:
         (10, 10)
         >>> 'history' in emissions.attrs
         True
+
+        Examples
+        --------
+        **Real-Data Workflow**
+
+        This example demonstrates a complete workflow for generating an
+        emission field, starting from creating realistic sample data files.
+
+        First, create the necessary input NetCDF files. This includes a
+        dummy XGBoost model, GBBEPx climatology, IGBP land cover map,
+        meteorological data, and initial FWI moisture code states.
+
+        .. code-block:: python
+
+            import xarray as xr
+            import numpy as np
+            import pandas as pd
+            import xgboost as xgb
+            import os
+
+            # Define grid dimensions
+            lats = np.arange(40, 40.2, 0.04)
+            lons = np.arange(-105.2, -105, 0.04)
+            time = pd.to_datetime(['2023-07-01T12:00:00'])
+            coords_2d = {'lat': lats, 'lon': lons}
+            coords_3d = {'time': time, 'lat': lats, 'lon': lons}
+
+            # 1. Dummy XGBoost Model
+            model = xgb.XGBRegressor(objective='reg:squarederror')
+            # A dummy fit is required before saving
+            dummy_X = np.random.rand(1, 6)
+            dummy_y = np.random.rand(1)
+            model.fit(dummy_X, dummy_y)
+            model_path = 'dummy_model.json'
+            model.save_model(model_path)
+
+            # 2. Dummy GBBEPx Climatology
+            climo_path = 'dummy_climo.nc'
+            climo_ds = xr.Dataset(
+                {'emissions': (('month', 'lat', 'lon'), np.ones((12, len(lats), len(lons))))},
+                coords={'month': range(1, 13), 'lat': lats, 'lon': lons}
+            )
+            climo_ds.to_netcdf(climo_path)
+
+            # 3. Dummy IGBP Map
+            igbp_path = 'dummy_igbp.nc'
+            igbp_ds = xr.Dataset(
+                {'band_1': (('lat', 'lon'), np.full((len(lats), len(lons)), 4))},
+                coords=coords_2d
+            )
+            igbp_ds.to_netcdf(igbp_path)
+
+            # 4. Dummy UFS Meteorology
+            met_path = 'dummy_met.nc'
+            met_ds = xr.Dataset({
+                't2m': (('time', 'lat', 'lon'), np.full((1, len(lats), len(lons)), 298.0)),
+                'rh2m': (('time', 'lat', 'lon'), np.full((1, len(lats), len(lons)), 45.0)),
+                'u10': (('time', 'lat', 'lon'), np.full((1, len(lats), len(lons)), 3.0)),
+                'v10': (('time', 'lat', 'lon'), np.full((1, len(lats), len(lons)), 3.0)),
+                'precip': (('time', 'lat', 'lon'), np.zeros((1, len(lats), len(lons)))),
+            }, coords=coords_3d)
+            met_ds.to_netcdf(met_path)
+
+            # 5. Dummy Previous FWI States
+            states_path = 'dummy_prev_states.nc'
+            states_ds = xr.Dataset({
+                'ffmc': (('lat', 'lon'), np.full((len(lats), len(lons)), 88.0)),
+                'dmc': (('lat', 'lon'), np.full((len(lats), len(lons)), 90.0)),
+                'dc': (('lat', 'lon'), np.full((len(lats), len(lons)), 350.0)),
+            }, coords=coords_2d)
+            states_ds.to_netcdf(states_path)
+
+            # 6. Dummy Fire Memory Grid
+            memory_path = 'dummy_memory.nc'
+            memory_ds = xr.Dataset(
+                {'FRP': (('lat', 'lon'), np.ones((len(lats), len(lons))))},
+                coords=coords_2d
+            )
+            memory_ds.to_netcdf(memory_path)
+
+        Now, execute the model for a single time step.
+
+        .. code-block:: python
+
+            # Initialize the generator
+            generator = FireEmissionGenerator(model_path=model_path, climo_path=climo_path)
+
+            # Load the prepared data
+            ufs_met = xr.open_dataset(met_path).squeeze()
+            prev_states = xr.open_dataset(states_path)
+            memory_grid = xr.open_dataset(memory_path)['FRP']
+            igbp_map = xr.open_dataset(igbp_path)['band_1']
+
+            # Run the core method
+            final_emissions, new_states = generator.run_step(
+                ufs_met=ufs_met,
+                prev_states=prev_states,
+                memory_grid=memory_grid,
+                igbp_map=igbp_map
+            )
+
+            # Save the new FWI states for the next time step
+            output_states_path = 'new_fwi_states.nc'
+            generator.save_state(new_states, output_states_path)
+
+            print(f"Final emissions grid shape: {final_emissions.shape}")
+            print(f"New FWI states saved to: {output_states_path}")
+
+        Finally, visualize the output emissions using ``hvplot``.
+
+        .. code-block:: python
+
+            import hvplot.xarray  # noqa
+            import cartopy.crs as ccrs
+
+            # Generate an interactive plot
+            plot = final_emissions.hvplot.quadmesh(
+                'lon', 'lat',
+                geo=True,
+                cmap='inferno',
+                clim=(0, final_emissions.quantile(0.99)),
+                tiles='OSM',
+                frame_width=600,
+                frame_height=400,
+                title='Predicted Biomass Burning Emissions',
+                rasterize=True  # Essential for large grids
+            )
+            # To view the plot in a notebook, simply display the 'plot' object
+            # To save it, you might need a backend like hvplot.save(plot, 'emissions_map.html')
+
+        This example provides a complete, runnable template for using the
+        ``FireEmissionGenerator`` with real-world, gridded data.
         """
         # 1. Parse Time
         current_dt = pd.to_datetime(ufs_met.time.item())
@@ -291,6 +423,11 @@ class FireEmissionGenerator:
         final_emissions = base_emissions * smooth_scale_da
 
         # 8. Format Output
+        # Drop the scalar 'month' coordinate inherited from the climatology
+        # to ensure the output grid is cleanly defined by lat/lon only.
+        if 'month' in final_emissions.coords:
+            final_emissions = final_emissions.drop_vars('month')
+
         history_log = (
             f"{pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}: "
             f"Fire emissions generated with UFSCATChemFireGenerator."
@@ -309,17 +446,43 @@ class FireEmissionGenerator:
     def save_state(self, states: xr.Dataset, filename: str) -> None:
         """Saves FWI moisture codes to NetCDF for restart capability.
 
+        This method serializes an xarray.Dataset containing the moisture
+        codes ('ffmc', 'dmc', 'dc') to a NetCDF file. This allows the state
+        to be saved at the end of a model run and loaded at the beginning
+        of the next, enabling continuous simulations.
+
         Parameters
         ----------
         states : xr.Dataset
-            The FWI moisture codes to save.
+            The FWI moisture codes to save. Must contain 'ffmc', 'dmc', and
+            'dc' as DataArrays with 'lat' and 'lon' coordinates.
         filename : str
-            The path to the output NetCDF file.
+            The path to the output NetCDF file. The directory will be
+            created if it does not exist.
+
+        Examples
+        --------
+        >>> states_ds = xr.Dataset({
+        ...     'ffmc': (('lat', 'lon'), np.full((10, 10), 85.0)),
+        ...     'dmc': (('lat', 'lon'), np.full((10, 10), 15.0)),
+        ...     'dc': (('lat', 'lon'), np.full((10, 10), 200.0)),
+        ... }, coords={'lat': np.arange(10), 'lon': np.arange(10)})
+        >>> generator.save_state(states_ds, 'fwi_states.nc')
+        >>> os.path.exists('fwi_states.nc')
+        True
         """
+        # Ensure the output directory exists
+        output_dir = os.path.dirname(filename)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
         states.to_netcdf(filename)
 
     def load_state(self, filename: str) -> xr.Dataset:
         """Loads FWI moisture codes from a previous day's output.
+
+        This method deserializes a NetCDF file into an xarray.Dataset,
+        providing the initial moisture code states needed to start a model
+        run.
 
         Parameters
         ----------
@@ -329,8 +492,24 @@ class FireEmissionGenerator:
         Returns
         -------
         xr.Dataset
-            The loaded FWI moisture codes.
+            The loaded FWI moisture codes, containing 'ffmc', 'dmc', and 'dc'
+            DataArrays.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the specified file does not exist.
+
+        Examples
+        --------
+        >>> # Assuming 'fwi_states.nc' was created by save_state
+        >>> loaded_states = generator.load_state('fwi_states.nc')
+        >>> 'dc' in loaded_states
+        True
+        >>> os.remove('fwi_states.nc') # Clean up the dummy file
         """
+        if not os.path.exists(filename):
+            raise FileNotFoundError(f"State file not found at {filename}")
         return xr.open_dataset(filename)
 
 # --- END OF FILE ---
