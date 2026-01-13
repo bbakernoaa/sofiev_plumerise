@@ -221,29 +221,18 @@ class FireEmissionGenerator:
         # 2. Update FWI Moisture Codes (Dask-aware)
         wind_speed = np.sqrt(ufs_met['u10']**2 + ufs_met['v10']**2)
 
-        # Ensure FWI outputs are explicitly cast back to DataArrays to preserve metadata
-        _coords = prev_states.coords
-        _dims = prev_states['ffmc'].dims  # All states share the same dims
-
-        _new_ffmc_data = self.fwi_engine.calculate_ffmc(
+        new_ffmc = self.fwi_engine.calculate_ffmc(
             ufs_met['t2m'], ufs_met['rh2m'], wind_speed, ufs_met['precip'], prev_states['ffmc']
         )
-        new_ffmc = xr.DataArray(_new_ffmc_data, coords=_coords, dims=_dims)
-
-        _new_dmc_data = self.fwi_engine.calculate_dmc(
+        new_dmc = self.fwi_engine.calculate_dmc(
             ufs_met['t2m'], ufs_met['rh2m'], ufs_met['precip'], prev_states['dmc'], month
         )
-        new_dmc = xr.DataArray(_new_dmc_data, coords=_coords, dims=_dims)
-
-        _new_dc_data = self.fwi_engine.calculate_dc(
+        new_dc = self.fwi_engine.calculate_dc(
             ufs_met['t2m'], ufs_met['precip'], prev_states['dc'], month
         )
-        new_dc = xr.DataArray(_new_dc_data, coords=_coords, dims=_dims)
-
 
         # 3. Calculate Behavioral Indices
-        _bui_data = self.fwi_engine.calculate_bui(new_dmc, new_dc)
-        bui = xr.DataArray(_bui_data, coords=_coords, dims=_dims)
+        bui = self.fwi_engine.calculate_bui(new_dmc, new_dc)
 
         # 4. Supplemental Predictors
         vpd = self.calculate_vpd(ufs_met['t2m'], ufs_met['rh2m'])
