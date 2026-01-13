@@ -1,3 +1,4 @@
+import numpy as np
 import xarray as xr
 
 
@@ -54,12 +55,12 @@ class FWI_Engine_Vectorized:
         # Condition for mo > 150.0
         mo_gt_150 = (
             mo
-            + 42.5 * rf * xr.ufuncs.exp(-100.0 / (251.0 - mo)) * (1.0 - xr.ufuncs.exp(-6.93 / rf))
-            + 0.0015 * (mo - 150.0) ** 2 * xr.ufuncs.sqrt(rf)
+            + 42.5 * rf * np.exp(-100.0 / (251.0 - mo)) * (1.0 - np.exp(-6.93 / rf))
+            + 0.0015 * (mo - 150.0) ** 2 * np.sqrt(rf)
         )
         # Condition for mo <= 150.0
-        mo_le_150 = mo + 42.5 * rf * xr.ufuncs.exp(-100.0 / (251.0 - mo)) * (
-            1.0 - xr.ufuncs.exp(-6.93 / rf)
+        mo_le_150 = mo + 42.5 * rf * np.exp(-100.0 / (251.0 - mo)) * (
+            1.0 - np.exp(-6.93 / rf)
         )
 
         # Apply conditions using xr.where
@@ -70,23 +71,23 @@ class FWI_Engine_Vectorized:
         # Equilibrium Moisture Content (EMC) for drying and wetting
         ed = (
             0.942 * (rh**0.679)
-            + 11.0 * xr.ufuncs.exp((rh - 100.0) / 10.0)
-            + 0.18 * (21.1 - temp) * (1.0 - xr.ufuncs.exp(-0.115 * rh))
+            + 11.0 * np.exp((rh - 100.0) / 10.0)
+            + 0.18 * (21.1 - temp) * (1.0 - np.exp(-0.115 * rh))
         )
         ew = (
             0.618 * (rh**0.753)
-            + 10.0 * xr.ufuncs.exp((rh - 100.0) / 10.0)
-            + 0.18 * (21.1 - temp) * (1.0 - xr.ufuncs.exp(-0.115 * rh))
+            + 10.0 * np.exp((rh - 100.0) / 10.0)
+            + 0.18 * (21.1 - temp) * (1.0 - np.exp(-0.115 * rh))
         )
 
         # Calculate final moisture content (m) based on drying or wetting
-        k1 = 0.424 * (1.0 - ((100.0 - rh) / 100.0) ** 1.7) + 0.0694 * xr.ufuncs.sqrt(wind) * (
+        k1 = 0.424 * (1.0 - ((100.0 - rh) / 100.0) ** 1.7) + 0.0694 * np.sqrt(wind) * (
             1.0 - ((100.0 - rh) / 100.0) ** 8
         )
-        kw = 0.307 * (1.0 - ((100.0 - rh) / 100.0)**1.7) + 0.0512 * xr.ufuncs.sqrt(wind) * (1.0 - ((100.0 - rh) / 100.0)**8)
+        kw = 0.307 * (1.0 - ((100.0 - rh) / 100.0)**1.7) + 0.0512 * np.sqrt(wind) * (1.0 - ((100.0 - rh) / 100.0)**8)
 
-        m_drying = ed + (mr - ed) * 10 ** (-k1 * 0.581 * xr.ufuncs.exp(0.0365 * temp))
-        m_wetting = ew - (ew - mr) * 10 ** (-kw * 0.581 * xr.ufuncs.exp(0.0365 * temp))
+        m_drying = ed + (mr - ed) * 10 ** (-k1 * 0.581 * np.exp(0.0365 * temp))
+        m_wetting = ew - (ew - mr) * 10 ** (-kw * 0.581 * np.exp(0.0365 * temp))
 
         m = xr.where(mr > ed, m_drying, xr.where(mr < ew, m_wetting, mr))
 
@@ -137,16 +138,16 @@ class FWI_Engine_Vectorized:
         re = xr.where(precip > 1.5, 0.92 * precip - 1.27, precip)
 
         # Moisture content before rain
-        mo = 20.0 + xr.ufuncs.exp(5.6348 - dmc_prev / 43.43)
+        mo = 20.0 + np.exp(5.6348 - dmc_prev / 43.43)
 
         # Duff moisture content after rain
         b_le_33 = 100.0 / (0.5 + 0.3 * dmc_prev)
-        b_le_65 = 14.0 - 1.3 * xr.ufuncs.log(dmc_prev)
-        b_gt_65 = 6.2 * xr.ufuncs.log(dmc_prev) - 17.2
+        b_le_65 = 14.0 - 1.3 * np.log(dmc_prev)
+        b_gt_65 = 6.2 * np.log(dmc_prev) - 17.2
         
         b = xr.where(dmc_prev <= 33.0, b_le_33, xr.where(dmc_prev <= 65.0, b_le_65, b_gt_65))
         mr = mo + 1000.0 * re / (48.77 + b * re)
-        pr = 43.43 * (5.6348 - xr.ufuncs.log(mr - 20.0))
+        pr = 43.43 * (5.6348 - np.log(mr - 20.0))
         pr = pr.where(pr < 0, 0) # ensure pr is not negative
         
         dmc = xr.where(precip > 1.5, pr, dmc_prev)
@@ -192,11 +193,11 @@ class FWI_Engine_Vectorized:
         pe = xr.where(precip > 2.8, 0.83 * precip - 1.27, precip)
 
         # Moisture equivalent before rain
-        qo = 800.0 * xr.ufuncs.exp(-dc_prev / 400.0)
+        qo = 800.0 * np.exp(-dc_prev / 400.0)
         qr = qo + 3.937 * pe
-        
+
         # Drought Code after rain
-        dr = 400.0 * xr.ufuncs.log(800.0 / qr)
+        dr = 400.0 * np.log(800.0 / qr)
         dr = dr.where(dr < 0, 0) # ensure dr is not negative
         
         dc = xr.where(precip > 2.8, dr, dc_prev)
@@ -226,8 +227,8 @@ class FWI_Engine_Vectorized:
             The calculated Initial Spread Index.
         """
         mo = 147.2 * (101.0 - ffmc) / (59.5 + ffmc)
-        fm = 91.9 * xr.ufuncs.exp(-0.1386 * mo) * (1.0 + (mo**5.31) / 4.93e7)
-        fw = xr.ufuncs.exp(0.05039 * wind)
+        fm = 91.9 * np.exp(-0.1386 * mo) * (1.0 + (mo**5.31) / 4.93e7)
+        fw = np.exp(0.05039 * wind)
         return 0.208 * fw * fm
 
     @staticmethod
@@ -278,11 +279,11 @@ class FWI_Engine_Vectorized:
             The final Fire Weather Index.
         """
         fd_le = 0.626 * (bui**0.809) + 2.0
-        fd_gt = 1000.0 / (25.0 + 108.64 * xr.ufuncs.exp(-0.023 * bui))
+        fd_gt = 1000.0 / (25.0 + 108.64 * np.exp(-0.023 * bui))
         fd = xr.where(bui <= 80.0, fd_le, fd_gt)
 
         b = 0.1 * isi * fd
 
-        fwi_gt = xr.ufuncs.exp(2.72 * (0.434 * xr.ufuncs.log(b)) ** 0.647)
+        fwi_gt = np.exp(2.72 * (0.434 * np.log(b)) ** 0.647)
         fwi = xr.where(b > 1.0, fwi_gt, b)
         return fwi
