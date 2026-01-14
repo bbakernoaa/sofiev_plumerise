@@ -2,7 +2,7 @@ from __future__ import annotations
 from __future__ import annotations
 
 import warnings
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Tuple
 
 import numpy as np
@@ -137,7 +137,7 @@ class GFSIngestor:
 
             # --- D. Assemble Final Dataset ---
             result_ds = xr.merge([h_abl_grid, wind_speed, n_ft], compat="override")
-            timestamp = datetime.now(UTC).isoformat()
+            timestamp = datetime.now(timezone.utc).isoformat()
             result_ds.attrs["history"] = (
                 f"[{timestamp}] Processed GFS analysis data. Calculated wind speed and Brunt-Vaisala frequency."
             )
