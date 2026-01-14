@@ -1,182 +1,147 @@
-module plumerise_sofiev_mod
+!> @file plumerise_sofiev_mod.f90
+!> @brief Advanced Plume Rise and Vertical Distribution Module
+!> @author Gemini / Research-Based Implementation
+!> @date 2026
 
+module plumerise_sofiev_mod
+   use iso_c_binding, only: c_double, c_int, c_bool
    implicit none
+
+   integer, parameter :: rk = c_double
+
+   !> Physical Constants
+   real(rk), parameter :: GRAV   = 9.80665_rk
+   real(rk), parameter :: KAPPA  = 0.2857_rk
+   real(rk), parameter :: N02    = 2.5e-4_rk
+   real(rk), parameter :: PF0    = 1.0e6_rk
+
+   !> @brief Configuration structure to toggle advanced physics
+   type :: PlumeControl
+      logical :: use_beta_dist = .false.
+      logical :: use_wind_adj  = .false.
+      real(rk)    :: alpha         = 3.0_rk
+      real(rk)    :: bet           = 2.0_rk
+   end type PlumeControl
 
 contains
 
-   subroutine find_height_index(GEOHGT, hgt, index)
-      ! simple function to find the height index given the target height in
-      ! a profile given the geopotential height.
+   !> @brief Finds the index in a profile that first exceeds the target height.
+   subroutine find_height_index(ZF, hgt, idx)
+      real(rk), intent(in)     :: ZF(:)
+      real(rk), intent(in)     :: hgt
+      integer, intent(out) :: idx
+      integer              :: i
 
-      ! Arguments
-      real, intent(in) :: GEOHGT(:)
-      real, intent(in) :: hgt
-      integer, intent(out) :: index
-
-      ! Local Variables:
-      integer :: i
-      real, dimension(:), allocatable :: diffs
-      ! real :: diffs(:)
-
-      allocate (diffs(size(geohgt)))
-
-      do i = 1, size(GEOHGT)
-         diffs(i) = abs(geohgt(i) - hgt)
+      idx = size(ZF)
+      do i = 1, size(ZF)
+         if (ZF(i) >= hgt) then
+            idx = i
+            exit
+         end if
       end do
-
-      index = minloc(diffs, 1)
-      ! function
-      ! index = FINDLOC(geohgt, hgt)
-      !index = FINDLOC(geohgt, hgt)
-
-      return
-
    end subroutine find_height_index
 
-   subroutine distribute_conc_linear(ZF, plmHGT, base_emiss, emis)
+   !> @brief Distributes surface emissions into a vertical column.
+   subroutine distribute_emissions(ZF, U, N2, plmHGT, base_emis, config, emis)
+      real(rk), intent(in)               :: ZF(:), U(:), N2
+      real(rk), intent(in)               :: plmHGT, base_emis
+      type(PlumeControl), intent(in) :: config
+      real(rk), intent(out)              :: emis(:)
 
-      ! Arguments
-      real, intent(in) :: ZF(:)      ! Height of full layer (m)
+      integer :: z, plm_idx
+      real(rk)    :: hgt_prev, layer_top, x_low, x_high, Hp_eff, avg_U
+      real(rk)    :: stab_penalty, weight
+      real(rk), parameter :: N2_ref = 2.5e-4_rk
 
-      real, intent(in) :: plmHGT  ! plume rise height
-      real, intent(in) :: base_emiss ! emission from file
-      real, intent(out) :: emis(:) ! output column emission
+      emis = 0.0_rk
+      if (plmHGT <= 0.0_rk) return
 
-      ! Local Variables:
-      real :: hgt_prev     ! place holder for previous height index
-      real :: dz           ! layer thickness
-      real :: total_height ! height of of plume
-      real :: column_frac  ! fraction of layer in total plume height
-      integer :: plmHGT_index ! plume rise height index in Z
-      integer :: z            ! loop index
+      ! 1. Wind & Stability Entrainment (Optional)
+      Hp_eff = plmHGT
+      if (config%use_wind_adj) then
+         call find_height_index(ZF, plmHGT, plm_idx)
+         avg_U = sum(U(1:plm_idx)) / max(1.0_rk, real(plm_idx, rk))
 
-      ! initialize emission array to zero
-      emis = 0.
+         stab_penalty = 1.0_rk + max(0.0_rk, N2 / N2_ref)
 
-      ! find the plume height index
-      call find_height_index(ZF, plmHGT, plmHGT_index)
-
-      ! get the total height
-      total_height = ZF(plmHGT_index)
-
-      hgt_prev = 0.
-      do z = 1, plmHGT_index
-         dz = ZF(z) - hgt_prev
-         column_frac = dz/total_height
-         emis(z) = column_frac*base_emiss
-         hgt_prev = zf(z)
-      end do
-
-      return
-
-   end subroutine distribute_conc_linear
-
-   subroutine sofiev_plmrise_column(Z, T, P, PBLH, psfc, frp, base_emis, plmHGT, column_emiss)
-      real, intent(in) :: z(:)
-      real, intent(in) :: T(:)
-      real, intent(in) :: P(:)
-      real, intent(in) :: PBLH
-      real, intent(in) :: psfc
-      real, intent(in) :: frp
-      real, intent(in) :: base_emis
-      real, intent(out) :: plmHGT
-      real, intent(out) :: column_emiss(:)
-
-      integer :: index
-      integer :: pblx2_index
-      real :: PT1, PT2, LayerDepth
-      real :: hgt_prev
-
-      !find the index of 2x the pbl
-      call find_height_index(z, pblh*2, pblx2_index)
-
-      ! now get the plume height
-      PT1 = T(pblx2_index - 1)*(psfc/p(pblx2_index - 1))**(2./7.)
-      PT2 = T(pblx2_index)*(psfc/p(pblx2_index))**(2./7.)
-      LayerDepth = z(pblx2_index) - z(pblx2_index - 1)
-
-      call plumeRiseSofiev(PT1, PT2, LayerDepth, frp, PBLH, plmHGT)
-
-      call distribute_conc_linear(Z, plmHGT, base_emis, column_emiss)
-
-      write (*, *) 'plmHGT:', plmHGT
-      write (*, *) 'frp:', frp
-      write (*, *) 'pblh:', PBLH
-      write (*, *) 'base_emiss:', base_emis
-      write (*, *) 'Z    ', 'dz    ', 'column_emiss'
-      hgt_prev = 0
-      do index = 1, 35
-         write (*, *) z(index), z(index) - hgt_prev, column_emiss(index)
-         hgt_prev = z(index)
-      end do
-
-      return
-   end subroutine sofiev_plmrise_column
-
-   subroutine plumeRiseSofiev(PT1, PT2, laydepth, frp, pblh, Hp)
-
-!  This subroutine implements the Sofiev plume rise algorithm
-!  History: 09/16/2019: Prototype by Daniel Tong (DT)
-!           10/15/2019: bug fix based on feedback from M. Sofiev, DT
-!            11/2020: parameterization options, Yunyao Li (YL)
-!
-!  Ref: M. Sofiev et al., Evaluation of the smoke-injection
-!    height from wild-land fires using remote sensing data.
-!    Atmos. Chem. Phys., 12, 1995-2006, 2012.
-
-      real Hp                ! plume height (m)
-      real pblh                ! PBL height (m)
-      real frp                ! fire radiative power (W)
-      real NFT_sq       ! N square in Free Troposphere (@ z = 2pblh)
-      real PT1, PT2     ! Potential Temperature right below and above PBL height
-      real laydepth        ! depth of the layer at the PBL height
-      real grav                ! gravity
-
-      real Pf0                ! reference fire power (W)
-      real N0_sq        ! Brunt-Vaisala frequency (s-2)
-      real alpha        ! part of ABL passed freely
-      real beta                ! weights contribution of fire intensity
-      real gama                ! power-law dependence on FRP
-      real delta        ! dependence on stability in the FT
-
-! ... Initial values.
-! ... predefined values parameter set 3 to estimate whether hp higher
-! than abl
-      alpha = 0.15
-      beta = 102
-      gama = 0.49
-      delta = 0
-
-      Pf0 = 1000000.0
-      N0_sq = 0.00025
-      grav = 9.8
-
-! ! ... calculate PT from T and P
-!       PT1 = T1 * (1000/P1)**0.286
-!       PT2 = T2 * (1000/P2)**0.286
-
-! ... calculate Brunt-Vaisala frequency
-      NFT_sq = grav/PT1*abs(PT1 - PT2)/laydepth
-
-! ... calculate first guess plume rise top height
-      Hp = alpha*pblh + beta*(frp/Pf0)**gama*exp(-delta*NFT_sq/N0_sq)
-! ... compare Hp with ABL
-      if (Hp .lt. pblh) then
-         alpha = 0.24
-         beta = 170
-         gama = 0.35
-         delta = 0.6
-         Hp = alpha*pblh + beta*(frp/Pf0)**gama*exp(-delta*NFT_sq/N0_sq)
-      else
-         alpha = 0.93
-         beta = 298
-         gama = 0.13
-         delta = 0.7
-         Hp = alpha*pblh + beta*(frp/Pf0)**gama*exp(-delta*NFT_sq/N0_sq)
+         if (avg_U > 2.0_rk) then
+            Hp_eff = plmHGT * (5.0_rk / max(5.0_rk, avg_U))**(0.5_rk * stab_penalty)
+         end if
       end if
 
-      print *, "The height of fire plume (m) is: ", Hp
+      call find_height_index(ZF, Hp_eff, plm_idx)
 
-   end subroutine
+      hgt_prev = 0.0_rk
+      do z = 1, plm_idx
+         layer_top = min(ZF(z), Hp_eff)
+
+         if (config%use_beta_dist) then
+            x_low  = hgt_prev / Hp_eff
+            x_high = layer_top / Hp_eff
+            weight = (4.0_rk*x_high**3 - 3.0_rk*x_high**4) - (4.0_rk*x_low**3 - 3.0_rk*x_low**4)
+         else
+            weight = (layer_top - hgt_prev) / Hp_eff
+         end if
+
+         emis(z) = weight * base_emis
+         hgt_prev = ZF(z)
+         if (hgt_prev >= Hp_eff) exit
+      end do
+
+      if (abs(sum(emis) - base_emis) > 1.e-6_rk) then
+         emis(plm_idx) = emis(plm_idx) + (base_emis - sum(emis))
+      end if
+   end subroutine distribute_emissions
+
+   !> @brief Core Sofiev Plume Rise algorithm
+   subroutine plumeRiseSofiev(N2, frp, pblh, Hp)
+      real(rk), intent(in)  :: N2, frp, pblh
+      real(rk), intent(out) :: Hp
+      real(rk) :: a, b, g, d
+
+      a = 0.15_rk; b = 102.0_rk; g = 0.49_rk; d = 0.0_rk
+      Hp = a * pblh + b * (frp/PF0)**g * exp(-d * N2 / N02)
+
+      if (Hp < pblh) then
+         a = 0.24_rk; b = 170.0_rk; g = 0.35_rk; d = 0.6_rk
+      else
+         a = 0.93_rk; b = 298.0_rk; g = 0.13_rk; d = 0.7_rk
+      end if
+
+      Hp = a * pblh + b * (frp/PF0)**g * exp(-d * N2 / N02)
+      Hp = max(Hp, 10.0_rk)
+   end subroutine plumeRiseSofiev
+
+
+   ! ------------------------------------------------------------------
+   ! C Interoperability Wrappers
+   ! ------------------------------------------------------------------
+   subroutine plume_rise_sofiev_c(N2, frp, pblh, Hp) &
+      bind(c, name='plume_rise_sofiev_c')
+      real(c_double), value, intent(in)  :: N2, frp, pblh
+      real(c_double), intent(out) :: Hp
+
+      call plumeRiseSofiev(N2, frp, pblh, Hp)
+
+   end subroutine plume_rise_sofiev_c
+
+   subroutine distribute_emissions_c(n_layers, ZF, U, N2, plmHGT, base_emis, &
+                                    use_beta_dist_c, use_wind_adj_c, emis) &
+      bind(c, name='distribute_emissions_c')
+
+      integer(c_int), value, intent(in) :: n_layers
+      logical(c_bool), value, intent(in) :: use_beta_dist_c, use_wind_adj_c
+      real(c_double), intent(in)  :: ZF(n_layers), U(n_layers)
+      real(c_double), value, intent(in)  :: N2, plmHGT, base_emis
+      real(c_double), intent(out) :: emis(n_layers)
+
+      type(PlumeControl) :: config
+
+      config%use_beta_dist = use_beta_dist_c
+      config%use_wind_adj  = use_wind_adj_c
+
+      call distribute_emissions(ZF, U, N2, plmHGT, base_emis, config, emis)
+
+   end subroutine distribute_emissions_c
 
 end module plumerise_sofiev_mod
