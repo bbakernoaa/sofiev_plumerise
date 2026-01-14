@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 from numpy.testing import assert_allclose
 
 # Before importing the wrapper, ensure the project is built so the .so file exists
