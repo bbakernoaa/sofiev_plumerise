@@ -4,6 +4,7 @@ import subprocess
 from setuptools import setup
 from setuptools.command.build_py import build_py
 
+
 # --- Custom Build Command ---
 class CustomBuild(build_py):
     def run(self):
@@ -34,7 +35,9 @@ class CustomBuild(build_py):
         # Find the library file (e.g., 'libsofiev.so')
         lib_filename = ""
         for f in os.listdir(lib_src_dir):
-            if f.startswith("libsofiev") and (f.endswith(".so") or f.endswith(".dylib") or f.endswith(".dll")):
+            if f.startswith("libsofiev") and (
+                f.endswith(".so") or f.endswith(".dylib") or f.endswith(".dll")
+            ):
                 lib_filename = f
                 break
 
@@ -46,6 +49,7 @@ class CustomBuild(build_py):
 
         # --- 3. Run the standard Python build ---
         super().run()
+
 
 # --- Setup Configuration ---
 setup(

@@ -9,6 +9,7 @@ from typing import Tuple
 # Import your rigorous vectorized routines
 from .cffwi import FWI_Engine_Vectorized
 
+
 class FireEmissionGenerator:
     """Orchestrates the calculation of biomass burning emissions.
 
@@ -32,6 +33,7 @@ class FireEmissionGenerator:
     climo : xr.Dataset
         The lazy-loaded GBBEPx climatology dataset.
     """
+
     def __init__(self, model_path: str, climo_path: str, target_res: float = 0.04):
         """Initializes the FireEmissionGenerator.
 
@@ -60,7 +62,7 @@ class FireEmissionGenerator:
         self.model.load_model(model_path)
 
         # Load the GBBEPx Climatology lazily with Dask
-        self.climo = xr.open_dataset(climo_path, chunks={'lat': 512, 'lon': 512})
+        self.climo = xr.open_dataset(climo_path, chunks={"lat": 512, "lon": 512})
 
     @staticmethod
     def calculate_vpd(t2m: xr.DataArray, rh2m: xr.DataArray) -> xr.DataArray:
@@ -131,7 +133,11 @@ class FireEmissionGenerator:
         # Select and sum emissions history. The slice end is made exclusive by
         # subtracting a nanosecond, ensuring we only get the last 6 full months.
         end_period = current_time - pd.Timedelta(nanoseconds=1)
-        memory = history_ds['FRP'].sel(time=slice(six_months_ago, end_period)).sum(dim='time')
+        memory = (
+            history_ds["FRP"]
+            .sel(time=slice(six_months_ago, end_period))
+            .sum(dim="time")
+        )
         return memory
 
     def run_step(
@@ -351,39 +357,49 @@ class FireEmissionGenerator:
         month = current_dt.month
 
         # 2. Update FWI Moisture Codes (Dask-aware)
-        wind_speed = np.sqrt(ufs_met['u10']**2 + ufs_met['v10']**2)
+        wind_speed = np.sqrt(ufs_met["u10"] ** 2 + ufs_met["v10"] ** 2)
 
         new_ffmc = self.fwi_engine.calculate_ffmc(
-            ufs_met['t2m'], ufs_met['rh2m'], wind_speed, ufs_met['precip'], prev_states['ffmc']
+            ufs_met["t2m"],
+            ufs_met["rh2m"],
+            wind_speed,
+            ufs_met["precip"],
+            prev_states["ffmc"],
         )
         new_dmc = self.fwi_engine.calculate_dmc(
-            ufs_met['t2m'], ufs_met['rh2m'], ufs_met['precip'], prev_states['dmc'], month
+            ufs_met["t2m"],
+            ufs_met["rh2m"],
+            ufs_met["precip"],
+            prev_states["dmc"],
+            month,
         )
         new_dc = self.fwi_engine.calculate_dc(
-            ufs_met['t2m'], ufs_met['precip'], prev_states['dc'], month
+            ufs_met["t2m"], ufs_met["precip"], prev_states["dc"], month
         )
 
         # 3. Calculate Behavioral Indices
         bui = self.fwi_engine.calculate_bui(new_dmc, new_dc)
 
         # 4. Supplemental Predictors
-        vpd = self.calculate_vpd(ufs_met['t2m'], ufs_met['rh2m'])
+        vpd = self.calculate_vpd(ufs_met["t2m"], ufs_met["rh2m"])
 
         # 5. ML Scaling (Dask-aware Feature Assembly)
         # Create a Dataset of predictors to ensure alignment
-        predictors = xr.Dataset({
-            'dc': new_dc,
-            'bui': bui,
-            'wind': wind_speed,
-            'vpd': vpd,
-            'memory': memory_grid,
-            'igbp': igbp_map
-        })
+        predictors = xr.Dataset(
+            {
+                "dc": new_dc,
+                "bui": bui,
+                "wind": wind_speed,
+                "vpd": vpd,
+                "memory": memory_grid,
+                "igbp": igbp_map,
+            }
+        )
 
         # Stack into a DataArray for ML input - this remains a lazy Dask operation
-        feature_stack = predictors.to_array(dim='variable')
+        feature_stack = predictors.to_array(dim="variable")
         # Rechunk to ensure the 'variable' dimension is a single block for the ML model.
-        feature_stack = feature_stack.chunk({'variable': -1})
+        feature_stack = feature_stack.chunk({"variable": -1})
 
         def predict_point(feature_vector):
             """Predicts the scale factor for a single spatial point."""
@@ -396,12 +412,14 @@ class FireEmissionGenerator:
         raw_scale = xr.apply_ufunc(
             predict_point,
             feature_stack,
-            input_core_dims=[['variable']],  # The function operates on the 'variable' dim
-            output_core_dims=[[]],           # It returns a scalar
-            exclude_dims=set(('variable',)), # The 'variable' dim is consumed
+            input_core_dims=[
+                ["variable"]
+            ],  # The function operates on the 'variable' dim
+            output_core_dims=[[]],  # It returns a scalar
+            exclude_dims=set(("variable",)),  # The 'variable' dim is consumed
             dask="parallelized",
             output_dtypes=[feature_stack.dtype],
-            vectorize=True  # Automatically broadcast the function over non-core dims
+            vectorize=True,  # Automatically broadcast the function over non-core dims
         )
 
         # 6. Post-processing (Dask-aware)
@@ -413,33 +431,33 @@ class FireEmissionGenerator:
         smooth_scale_data = raw_scale.data.map_overlap(
             smooth_and_clip,
             depth=2,  # Depth must be >= sigma
-            boundary='reflect',
-            sigma=1.0
+            boundary="reflect",
+            sigma=1.0,
         )
-        smooth_scale_da = xr.DataArray(smooth_scale_data, coords=raw_scale.coords, dims=raw_scale.dims)
+        smooth_scale_da = xr.DataArray(
+            smooth_scale_data, coords=raw_scale.coords, dims=raw_scale.dims
+        )
 
         # 7. Apply to Base Climatology
-        base_emissions = self.climo['emissions'].sel(month=month)
+        base_emissions = self.climo["emissions"].sel(month=month)
         final_emissions = base_emissions * smooth_scale_da
 
         # 8. Format Output
         # Drop the scalar 'month' coordinate inherited from the climatology
         # to ensure the output grid is cleanly defined by lat/lon only.
-        if 'month' in final_emissions.coords:
-            final_emissions = final_emissions.drop_vars('month')
+        if "month" in final_emissions.coords:
+            final_emissions = final_emissions.drop_vars("month")
 
         history_log = (
             f"{pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}: "
             f"Fire emissions generated with UFSCATChemFireGenerator."
         )
-        final_emissions.attrs['history'] = history_log
-        final_emissions.name = 'emissions'
+        final_emissions.attrs["history"] = history_log
+        final_emissions.name = "emissions"
 
-        new_states_ds = xr.Dataset({
-            'ffmc': new_ffmc,
-            'dmc': new_dmc,
-            'dc': new_dc
-        }, coords=ufs_met.coords)
+        new_states_ds = xr.Dataset(
+            {"ffmc": new_ffmc, "dmc": new_dmc, "dc": new_dc}, coords=ufs_met.coords
+        )
 
         return final_emissions, new_states_ds
 
@@ -511,5 +529,6 @@ class FireEmissionGenerator:
         if not os.path.exists(filename):
             raise FileNotFoundError(f"State file not found at {filename}")
         return xr.open_dataset(filename)
+
 
 # --- END OF FILE ---

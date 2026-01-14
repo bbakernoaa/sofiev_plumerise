@@ -1,6 +1,7 @@
 import pytest
 from sofiev_model.sofiev_tuner import SofievTuner
 
+
 def test_sofiev_tuner_initialization():
     """
     Tests that the SofievTuner class can be initialized.

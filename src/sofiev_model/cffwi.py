@@ -84,7 +84,9 @@ class FWI_Engine_Vectorized:
         k1 = 0.424 * (1.0 - ((100.0 - rh) / 100.0) ** 1.7) + 0.0694 * np.sqrt(wind) * (
             1.0 - ((100.0 - rh) / 100.0) ** 8
         )
-        kw = 0.307 * (1.0 - ((100.0 - rh) / 100.0)**1.7) + 0.0512 * np.sqrt(wind) * (1.0 - ((100.0 - rh) / 100.0)**8)
+        kw = 0.307 * (1.0 - ((100.0 - rh) / 100.0) ** 1.7) + 0.0512 * np.sqrt(wind) * (
+            1.0 - ((100.0 - rh) / 100.0) ** 8
+        )
 
         m_drying = ed + (mr - ed) * 10 ** (-k1 * 0.581 * np.exp(0.0365 * temp))
         m_wetting = ew - (ew - mr) * 10 ** (-kw * 0.581 * np.exp(0.0365 * temp))
@@ -132,8 +134,8 @@ class FWI_Engine_Vectorized:
         ell_f = [6.5, 7.5, 9.0, 12.8, 13.9, 13.9, 12.4, 10.9, 9.4, 8.0, 7.0, 6.0]
         L = ell_f[month - 1]
 
-        t = xr.where(temp < -1.1, -1.1, temp) # Temperature floor
-        
+        t = xr.where(temp < -1.1, -1.1, temp)  # Temperature floor
+
         # Effective rainfall
         re = xr.where(precip > 1.5, 0.92 * precip - 1.27, precip)
 
@@ -144,12 +146,14 @@ class FWI_Engine_Vectorized:
         b_le_33 = 100.0 / (0.5 + 0.3 * dmc_prev)
         b_le_65 = 14.0 - 1.3 * np.log(dmc_prev)
         b_gt_65 = 6.2 * np.log(dmc_prev) - 17.2
-        
-        b = xr.where(dmc_prev <= 33.0, b_le_33, xr.where(dmc_prev <= 65.0, b_le_65, b_gt_65))
+
+        b = xr.where(
+            dmc_prev <= 33.0, b_le_33, xr.where(dmc_prev <= 65.0, b_le_65, b_gt_65)
+        )
         mr = mo + 1000.0 * re / (48.77 + b * re)
         pr = 43.43 * (5.6348 - np.log(mr - 20.0))
-        pr = pr.where(pr < 0, 0) # ensure pr is not negative
-        
+        pr = pr.where(pr < 0, 0)  # ensure pr is not negative
+
         dmc = xr.where(precip > 1.5, pr, dmc_prev)
 
         # Drying potential
@@ -187,7 +191,7 @@ class FWI_Engine_Vectorized:
         lfv = [-1.6, -1.6, -1.6, 0.9, 3.8, 5.8, 6.4, 5.0, 2.4, 0.4, -1.6, -1.6]
         L = lfv[month - 1]
 
-        t = xr.where(temp < -2.8, -2.8, temp) # Temperature floor
+        t = xr.where(temp < -2.8, -2.8, temp)  # Temperature floor
 
         # Effective rainfall
         pe = xr.where(precip > 2.8, 0.83 * precip - 1.27, precip)
@@ -198,10 +202,10 @@ class FWI_Engine_Vectorized:
 
         # Drought Code after rain
         dr = 400.0 * np.log(800.0 / qr)
-        dr = dr.where(dr < 0, 0) # ensure dr is not negative
-        
+        dr = dr.where(dr < 0, 0)  # ensure dr is not negative
+
         dc = xr.where(precip > 2.8, dr, dc_prev)
-        
+
         # Potential evapotranspiration (drying)
         v = (0.36 * (t + 2.8) + L) * 0.5
         return dc + v.where(v > 0, 0)
@@ -256,7 +260,7 @@ class FWI_Engine_Vectorized:
             0.92 + (0.0114 * dmc) ** 1.7
         )
         bui = xr.where(dmc <= 0.4 * dc, bui_le, bui_gt)
-        return xr.where(bui < 0, 0, bui) # ensure bui is not negative
+        return xr.where(bui < 0, 0, bui)  # ensure bui is not negative
 
     @staticmethod
     def calculate_fwi(isi: xr.DataArray, bui: xr.DataArray) -> xr.DataArray:

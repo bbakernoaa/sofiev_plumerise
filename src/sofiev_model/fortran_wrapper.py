@@ -53,6 +53,7 @@ distribute_emissions.restype = None
 
 # --- Create user-friendly Python wrappers ---
 
+
 def plume_rise(n2, frp, pblh):
     """
     Calculates the plume rise height using the Sofiev algorithm.
@@ -66,8 +67,14 @@ def plume_rise(n2, frp, pblh):
         float: The calculated plume top height (m).
     """
     hp = ctypes.c_double()
-    plume_rise_sofiev(ctypes.c_double(n2), ctypes.c_double(frp), ctypes.c_double(pblh), ctypes.byref(hp))
+    plume_rise_sofiev(
+        ctypes.c_double(n2),
+        ctypes.c_double(frp),
+        ctypes.c_double(pblh),
+        ctypes.byref(hp),
+    )
     return hp.value
+
 
 def distribute_vertical_emissions(
     zf, u, n2, plm_hgt, base_emis, use_beta_dist=False, use_wind_adj=False

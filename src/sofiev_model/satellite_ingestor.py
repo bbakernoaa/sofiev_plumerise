@@ -4,11 +4,13 @@ import pandas as pd
 from datetime import datetime, timedelta
 from .gfs_ingestor import GFSIngestor
 
+
 class SatelliteIngestor:
     """
     Generates synthetic 'Truth' data for demonstration.
     Replace 'simulate_data' with actual NetCDF readers for production.
     """
+
     def __init__(self, n_samples: int = 200):
         """
         Initializes the SatelliteIngestor.
@@ -39,8 +41,11 @@ class SatelliteIngestor:
         # 1. Create Synthetic Fire Events
         # Fires usually happen in afternoon, summer
         base_time = datetime(2023, 7, 15, 12, 0)
-        times = [base_time + timedelta(hours=np.random.randint(0, 48)) for _ in range(self.n_samples)]
-        lats = np.random.uniform(35, 48, self.n_samples) # US/Canada latitudes
+        times = [
+            base_time + timedelta(hours=np.random.randint(0, 48))
+            for _ in range(self.n_samples)
+        ]
+        lats = np.random.uniform(35, 48, self.n_samples)  # US/Canada latitudes
         lons = np.random.uniform(-120, -100, self.n_samples)
 
         # 2. Fire Intensity (FRP) - Exponential distribution
@@ -70,18 +75,26 @@ class SatelliteIngestor:
         # 4. Generate "Observed" Plume Heights (The Truth)
         # We assume truth follows a complex physics law we want to rediscover
         # Real Obs = Buoyancy - WindShear + RandomNoise
-        h_obs = 200 * (frp**0.4) * np.exp(-0.5 * np.array(n_ft_list)/0.01) - (50 * np.array(wind_list)) + np.random.normal(0, 300, self.n_samples)
-        h_obs = np.maximum(h_obs, np.array(h_abl_list) + 100) # Ensure it rises at least near PBL
+        h_obs = (
+            200 * (frp**0.4) * np.exp(-0.5 * np.array(n_ft_list) / 0.01)
+            - (50 * np.array(wind_list))
+            + np.random.normal(0, 300, self.n_samples)
+        )
+        h_obs = np.maximum(
+            h_obs, np.array(h_abl_list) + 100
+        )  # Ensure it rises at least near PBL
 
-        df = pd.DataFrame({
-            'time': times,
-            'lat': lats,
-            'lon': lons,
-            'frp_total': frp,
-            'h_abl': h_abl_list,
-            'n_ft': n_ft_list,
-            'wind_speed': wind_list,
-            'h_obs_misr': h_obs
-        })
+        df = pd.DataFrame(
+            {
+                "time": times,
+                "lat": lats,
+                "lon": lons,
+                "frp_total": frp,
+                "h_abl": h_abl_list,
+                "n_ft": n_ft_list,
+                "wind_speed": wind_list,
+                "h_obs_misr": h_obs,
+            }
+        )
 
         return df.dropna()

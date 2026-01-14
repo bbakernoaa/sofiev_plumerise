@@ -7,6 +7,7 @@ from sofiev_model.fortran_wrapper import (
     distribute_vertical_emissions,
 )
 
+
 def test_plume_rise_wrapper():
     """
     Tests the Python wrapper for the plumeRiseSofiev subroutine.
@@ -23,6 +24,7 @@ def test_plume_rise_wrapper():
     # Case 3: Numerical floor
     hp3 = plume_rise(n2=1.0e-3, frp=1.0, pblh=1.0)
     assert_allclose(hp3, 10.0, rtol=1e-4)
+
 
 def test_distribute_emissions_wrapper():
     """
@@ -56,7 +58,13 @@ def test_distribute_emissions_wrapper():
     u_windy = np.full_like(zf, 10.0)
     n2_windy = 2.5e-4
     emis3 = distribute_vertical_emissions(
-        zf, u_windy, n2_windy, plm_hgt_windy, base_emis, use_beta_dist=False, use_wind_adj=True
+        zf,
+        u_windy,
+        n2_windy,
+        plm_hgt_windy,
+        base_emis,
+        use_beta_dist=False,
+        use_wind_adj=True,
     )
     # Expected Hp_eff = 800 * (5.0/10.0)**(0.5 * (1+1)) = 400.0
     expected3 = np.array([25.0, 25.0, 25.0, 25.0, 0.0])
@@ -64,8 +72,6 @@ def test_distribute_emissions_wrapper():
     assert_allclose(np.sum(emis3), base_emis, rtol=1e-6)
 
     # Test 4: Zero plume height
-    emis4 = distribute_vertical_emissions(
-        zf, u, n2, 0.0, base_emis
-    )
+    emis4 = distribute_vertical_emissions(zf, u, n2, 0.0, base_emis)
     expected4 = np.zeros_like(zf)
     assert_allclose(emis4, expected4, rtol=1e-6)
