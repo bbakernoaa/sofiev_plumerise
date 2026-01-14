@@ -17,8 +17,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install Fortran compiler
-        run: sudo apt-get update && sudo apt-get install -y gfortran
+      - name: Install Fortran compiler and CMake
+        run: sudo apt-get update && sudo apt-get install -y gfortran cmake
 
       - name: Install Python dependencies
         run: |
@@ -33,13 +33,13 @@ jobs:
           pip install fprettify
           fprettify --diff --recursive src/fortran
 
-      - name: Configure and build Fortran code
+      - name: Configure, build, and test Fortran code
         run: |
           rm -rf build
-          mkdir build
+          cmake -S . -B build
+          cmake --build build
           cd build
-          cmake ..
-          make
+          ctest
 
       - name: Test with pytest
         run: pytest
