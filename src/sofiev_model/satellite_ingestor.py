@@ -1,10 +1,11 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-import numpy as np
+import os
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List
 import earthaccess
+import xarray as xr
 from sentinelsat import SentinelAPI
 from .gfs_ingestor import GFSIngestor
 
@@ -32,9 +33,6 @@ class SatelliteIngestor(ABC):
             A DataFrame containing the satellite data.
         """
         pass
-
-import os
-import xarray as xr
 
 class TropomiIngestor(SatelliteIngestor):
     """
