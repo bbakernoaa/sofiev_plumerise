@@ -1,87 +1,217 @@
 from __future__ import annotations
-import numpy as np
+from abc import ABC, abstractmethod
+import os
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
+from typing import List
+import earthaccess
+import xarray as xr
+from sentinelsat import SentinelAPI
 from .gfs_ingestor import GFSIngestor
 
-class SatelliteIngestor:
+class SatelliteIngestor(ABC):
     """
-    Generates synthetic 'Truth' data for demonstration.
-    Replace 'simulate_data' with actual NetCDF readers for production.
+    Abstract base class for satellite data ingestors.
     """
-    def __init__(self, n_samples: int = 200):
+    @abstractmethod
+    def get_data(self, start_date: datetime, end_date: datetime, aoi: List[float]) -> pd.DataFrame:
         """
-        Initializes the SatelliteIngestor.
+        Fetches satellite data for a given time range and area of interest.
 
         Parameters
         ----------
-        n_samples : int, optional
-            The number of synthetic fire events to generate, by default 200.
-        """
-        self.n_samples = n_samples
-
-    def get_collocated_dataset(self, gfs_ingestor: GFSIngestor) -> pd.DataFrame:
-        """
-        Generates a synthetic dataset of fire events and collocates them with GFS data.
-
-        Parameters
-        ----------
-        gfs_ingestor : GFSIngestor
-            An instance of the GFSIngestor class.
+        start_date : datetime
+            The start date of the time range.
+        end_date : datetime
+            The end date of the time range.
+        aoi : List[float]
+            The area of interest, defined as [lon_min, lat_min, lon_max, lat_max].
 
         Returns
         -------
         pd.DataFrame
-            A DataFrame containing the synthetic fire events and collocated GFS data.
+            A DataFrame containing the satellite data.
         """
-        print("\n--- Generating/Ingesting Satellite Data ---")
+        pass
 
-        # 1. Create Synthetic Fire Events
-        # Fires usually happen in afternoon, summer
-        base_time = datetime(2023, 7, 15, 12, 0)
-        times = [base_time + timedelta(hours=np.random.randint(0, 48)) for _ in range(self.n_samples)]
-        lats = np.random.uniform(35, 48, self.n_samples) # US/Canada latitudes
-        lons = np.random.uniform(-120, -100, self.n_samples)
+class TropomiIngestor(SatelliteIngestor):
+    """
+    Ingests TROPOMI data.
+    """
+    def get_data(self, start_date: datetime, end_date: datetime, aoi: List[float]) -> pd.DataFrame:
+        print("Fetching TROPOMI data...")
+        api = SentinelAPI('s5pguest', 's5pguest', 'https://s5phub.copernicus.eu/dhus')
 
-        # 2. Fire Intensity (FRP) - Exponential distribution
-        frp = np.random.exponential(500, self.n_samples) + 50
+        # Format AOI for the query
+        footprint = f'POLYGON(({aoi[0]} {aoi[1]}, {aoi[2]} {aoi[1]}, {aoi[2]} {aoi[3]}, {aoi[0]} {aoi[3]}, {aoi[0]} {aoi[1]}))'
 
-        # 3. Fetch GFS Data (Real AWS calls or Simulation for speed)
-        # NOTE: For this demo, we will SIMULATE the GFS return to avoid
-        # hitting AWS 200 times and waiting 10 mins.
-        # UNCOMMENT the loop below to use real AWS data.
+        products = api.query(
+            area=footprint,
+            date=(start_date, end_date),
+            producttype='L2__SO2___',
+        )
 
-        h_abl_list = []
-        n_ft_list = []
-        wind_list = []
+        if not products:
+            print("No TROPOMI products found.")
+            return pd.DataFrame()
 
-        print("   (Simulating GFS values for speed...)")
-        h_abl_list = np.random.normal(1500, 400, self.n_samples)
-        n_ft_list = np.abs(np.random.normal(0.012, 0.003, self.n_samples))
-        wind_list = np.random.weibull(2, self.n_samples) * 6
+        # Download the first product
+        product_id = list(products.keys())[0]
+        product_info = api.get_product_odata(product_id)
 
-        # --- REAL AWS FETCH LOOP (Uncomment for production) ---
-        # for t, lat, lon in zip(times, lats, lons):
-        #     h, w, n = gfs_ingestor.get_analysis_point(t, lat, lon)
-        #     h_abl_list.append(h)
-        #     n_ft_list.append(n)
-        #     wind_list.append(w)
+        # Check if file already exists
+        filepath = f"./{product_info['title']}"
+        if not os.path.exists(filepath):
+            print(f"Downloading {product_info['title']}...")
+            api.download(product_id)
+        else:
+            print(f"Using existing file: {product_info['title']}")
 
-        # 4. Generate "Observed" Plume Heights (The Truth)
-        # We assume truth follows a complex physics law we want to rediscover
-        # Real Obs = Buoyancy - WindShear + RandomNoise
-        h_obs = 200 * (frp**0.4) * np.exp(-0.5 * np.array(n_ft_list)/0.01) - (50 * np.array(wind_list)) + np.random.normal(0, 300, self.n_samples)
-        h_obs = np.maximum(h_obs, np.array(h_abl_list) + 100) # Ensure it rises at least near PBL
+        # Process the NetCDF file
+        with xr.open_dataset(filepath, group='PRODUCT') as ds:
+            # Extract data
+            lat = ds['latitude'].values.flatten()
+            lon = ds['longitude'].values.flatten()
+            so2 = ds['sulfurdioxide_total_vertical_column'].values.flatten()
 
-        df = pd.DataFrame({
-            'time': times,
-            'lat': lats,
-            'lon': lons,
-            'frp_total': frp,
-            'h_abl': h_abl_list,
-            'n_ft': n_ft_list,
-            'wind_speed': wind_list,
-            'h_obs_misr': h_obs
-        })
+            # The time variable is a single value for the granule
+            time_val = pd.to_datetime(ds['time_utc'].values[0])
+            times = [time_val] * len(lat)
 
-        return df.dropna()
+            df = pd.DataFrame({
+                'time': times,
+                'lat': lat,
+                'lon': lon,
+                'so2': so2,
+            })
+
+        return df
+
+class TempoIngestor(SatelliteIngestor):
+    """
+    Ingests TEMPO data.
+    """
+    def get_data(self, start_date: datetime, end_date: datetime, aoi: List[float]) -> pd.DataFrame:
+        print("Fetching TEMPO data...")
+        earthaccess.login(strategy="environment")
+
+        results = earthaccess.search_data(
+            short_name='TEMPO_NRT_L2_NO2_V01',
+            bounding_box=(aoi[0], aoi[1], aoi[2], aoi[3]),
+            temporal=(start_date.isoformat(), end_date.isoformat()),
+            count=1
+        )
+
+        if not results:
+            print("No TEMPO products found.")
+            return pd.DataFrame()
+
+        filepaths = earthaccess.download(results, local_path=".")
+        filepath = filepaths[0]
+
+        with xr.open_dataset(filepath, group='product_data') as ds:
+            lat = ds['latitude'].values.flatten()
+            lon = ds['longitude'].values.flatten()
+            no2 = ds['nitrogendioxide_tropospheric_vertical_column'].values.flatten()
+
+            # The time variable is a single value for the granule
+            time_val = pd.to_datetime(ds['time'].values)
+            times = [time_val] * len(lat)
+
+            df = pd.DataFrame({
+                'time': times,
+                'lat': lat,
+                'lon': lon,
+                'no2': no2,
+            })
+
+        return df
+
+class OmpsIngestor(SatelliteIngestor):
+    """
+    Ingests OMPS data.
+    """
+    def get_data(self, start_date: datetime, end_date: datetime, aoi: List[float]) -> pd.DataFrame:
+        print("Fetching OMPS data...")
+        earthaccess.login(strategy="environment")
+
+        results = earthaccess.search_data(
+            short_name='OMPS_NPP_NMSO2_L2_NRT_V2',
+            bounding_box=(aoi[0], aoi[1], aoi[2], aoi[3]),
+            temporal=(start_date.isoformat(), end_date.isoformat()),
+            count=1
+        )
+
+        if not results:
+            print("No OMPS products found.")
+            return pd.DataFrame()
+
+        filepaths = earthaccess.download(results, local_path=".")
+        filepath = filepaths[0]
+
+        with xr.open_dataset(filepath, group='Data Fields') as ds:
+            lat = ds['Latitude'].values.flatten()
+            lon = ds['Longitude'].values.flatten()
+            so2 = ds['ColumnAmountSO2_PBL'].values.flatten()
+
+            # The time variable is a single value for the granule
+            time_val = pd.to_datetime(ds['Time'].values)
+            times = [time_val] * len(lat)
+
+            df = pd.DataFrame({
+                'time': times,
+                'lat': lat,
+                'lon': lon,
+                'so2_omps': so2,
+            })
+
+        return df
+
+def load_and_collocate_data(ingestors: List[SatelliteIngestor], gfs_ingestor: GFSIngestor,
+                              start_date: datetime, end_date: datetime, aoi: List[float]) -> pd.DataFrame:
+    """
+    Loads data from multiple satellite ingestors and collocates it with GFS data.
+
+    Parameters
+    ----------
+    ingestors : List[SatelliteIngestor]
+        A list of satellite ingestor instances.
+    gfs_ingestor : GFSIngestor
+        An instance of the GFSIngestor class.
+    start_date : datetime
+        The start date of the time range.
+    end_date : datetime
+        The end date of the time range.
+    aoi : List[float]
+        The area of interest.
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame containing the combined and collocated data.
+    """
+    all_data = []
+    for ingestor in ingestors:
+        all_data.append(ingestor.get_data(start_date, end_date, aoi))
+
+    df = pd.concat(all_data, ignore_index=True)
+
+    if df.empty:
+        return df
+
+    # Collocation with GFS data (placeholder for now)
+    h_abl_list = []
+    n_ft_list = []
+    wind_list = []
+
+    for index, row in df.iterrows():
+        h, w, n = gfs_ingestor.get_analysis_point(row['time'], row['lat'], row['lon'])
+        h_abl_list.append(h)
+        n_ft_list.append(n)
+        wind_list.append(w)
+
+    df['h_abl'] = h_abl_list
+    df['n_ft'] = n_ft_list
+    df['wind_speed'] = wind_list
+
+    return df.dropna()
