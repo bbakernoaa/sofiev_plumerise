@@ -49,7 +49,8 @@ class GFSIngestor:
         Returns
         -------
         xr.Dataset
-            A dataset containing the following variables over the specified grid:
+            A lazy-loaded dask-backed dataset containing the following
+            variables over the specified grid:
             - `pbl_height`: Planetary boundary layer height (m)
             - `wind_speed_850mb`: Wind speed at 850mb (m/s)
             - `n_ft`: Brunt-Vaisala frequency in the free troposphere (s^-1)
@@ -142,7 +143,7 @@ class GFSIngestor:
                 f"[{timestamp}] Processed GFS analysis data. Calculated wind speed and Brunt-Vaisala frequency."
             )
 
-            return result_ds.compute()  # Eager load for this application
+            return result_ds
 
         except Exception as e:
             print(f"   [Error] GFS Fetch Failed for {target_time}: {e}")
