@@ -10,17 +10,21 @@ dependencies = [
     "dask",
     "xgboost",
     "xarray",
+    "h5netcdf",
     "pandas",
     "scipy",
     "numpy",
     "scikit-learn",
     "s3fs",
+    "sentinelsat",
+    "earthaccess",
 ]
 
 [project.optional-dependencies]
 dev = [
     "ruff",
     "pytest",
+    "pytest-mock",
 ]
 
 [tool.setuptools.packages.find]
