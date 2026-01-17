@@ -142,7 +142,7 @@ class GFSIngestor:
                 f"[{timestamp}] Processed GFS analysis data. Calculated wind speed and Brunt-Vaisala frequency."
             )
 
-            return result_ds.compute()  # Eager load for this application
+            return result_ds
 
         except Exception as e:
             print(f"   [Error] GFS Fetch Failed for {target_time}: {e}")
