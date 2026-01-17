@@ -144,3 +144,48 @@ def test_get_analysis_grid(monkeypatch, mock_gfs_datasets):
         expected_ds.astype(np.float32),
         rtol=1e-4,
     )
+
+
+def test_get_analysis_grid_is_lazy(monkeypatch, mock_gfs_datasets):
+    """
+    Unit test for GFSIngestor.get_analysis_grid laziness.
+
+    Tests that the function returns a dask-backed xarray.Dataset and
+    that the data is not eagerly loaded.
+    """
+    # 1. Setup Mocks
+    mock_s3fs = unittest.mock.MagicMock()
+    monkeypatch.setattr("s3fs.S3FileSystem", mock_s3fs)
+    monkeypatch.setattr("s3fs.S3Map", unittest.mock.MagicMock())
+
+    ds_surf, ds_iso = mock_gfs_datasets
+
+    # Mock xr.open_dataset to return different datasets based on filter keys
+    def mock_open_dataset(*args, **kwargs):
+        filter_keys = kwargs.get("backend_kwargs", {}).get("filter_by_keys", {})
+        if filter_keys.get("typeOfLevel") == "surface":
+            return ds_surf.chunk()  # Return as a dask-backed array
+        elif filter_keys.get("typeOfLevel") == "isobaricInhPa":
+            return ds_iso.chunk()  # Return as a dask-backed array
+        raise ValueError("Unexpected call to xr.open_dataset with mock")
+
+    monkeypatch.setattr("xarray.open_dataset", mock_open_dataset)
+
+    # 2. Call the Method
+    ingestor = GFSIngestor()
+    target_time = datetime(2023, 1, 1, 7, 0, 0)
+    lat_range = (40.0, 50.0)
+    lon_range = (-120.0, -110.0)
+    result_ds = ingestor.get_analysis_grid(target_time, lat_range, lon_range)
+
+    # 3. Assertions
+    assert isinstance(result_ds, xr.Dataset)
+    assert result_ds.chunks  # Check that the dataset has dask chunks
+    assert "pbl_height" in result_ds
+    assert "wind_speed_850mb" in result_ds
+    assert "n_ft" in result_ds
+
+    # Verify that computing the result works as expected
+    computed_ds = result_ds.compute()
+    assert not computed_ds.chunks  # The computed dataset should not have chunks
+    assert computed_ds["pbl_height"].shape == (10, 10)
