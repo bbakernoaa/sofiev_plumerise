@@ -1,146 +1,134 @@
-from __future__ import annotations
-
-import unittest.mock
-from datetime import datetime
-
-import numpy as np
 import pytest
+from unittest.mock import patch
+from datetime import datetime
 import xarray as xr
-from xarray.testing import assert_allclose
-
+import numpy as np
+import dask.array as da
 from sofiev_model.gfs_ingestor import GFSIngestor
 
 
 @pytest.fixture
-def mock_gfs_datasets():
-    """Pytest fixture to create mock GFS xarray.Dataset objects."""
+def mock_gfs_data():
+    """Creates mock GFS xarray.Dataset objects for surface and isobaric levels."""
     # Common coordinates
-    lat_coords = np.arange(50, 40, -1.0)  # Descending latitude
+    lat_coords = np.arange(50, 40, -1.0)
     lon_coords = np.arange(240, 250, 1.0)
-    time_coord = datetime(2023, 1, 1, 6, 0, 0)
 
     # --- Mock Surface Dataset (for PBL Height) ---
+    pbl_height_data = da.from_array(
+        np.full((len(lat_coords), len(lon_coords)), 1500.0), chunks=(10, 10)
+    )
     ds_surf = xr.Dataset(
+        {"hpbl": (("latitude", "longitude"), pbl_height_data)},
+        coords={"latitude": lat_coords, "longitude": lon_coords},
+    )
+
+    # --- Mock Isobaric Dataset (for Wind & Temperature) ---
+    isobaric_levels = [850, 700]
+    u_data = da.from_array(
+        np.full((len(isobaric_levels), len(lat_coords), len(lon_coords)), 10.0),
+        chunks=(2, 10, 10),
+    )
+    v_data = da.from_array(
+        np.full((len(isobaric_levels), len(lat_coords), len(lon_coords)), -5.0),
+        chunks=(2, 10, 10),
+    )
+    t_data = da.from_array(
+        np.array(
+            [
+                np.full((len(lat_coords), len(lon_coords)), 285.0),  # Temp at 850mb
+                np.full((len(lat_coords), len(lon_coords)), 275.0),  # Temp at 700mb
+            ]
+        ),
+        chunks=(2, 10, 10),
+    )
+
+    ds_iso = xr.Dataset(
         {
-            "hpbl": (
-                ("latitude", "longitude"),
-                np.ones((len(lat_coords), len(lon_coords))) * 1200.0,
-            ),
+            "u": (("isobaricInhPa", "latitude", "longitude"), u_data),
+            "v": (("isobaricInhPa", "latitude", "longitude"), v_data),
+            "t": (("isobaricInhPa", "latitude", "longitude"), t_data),
         },
         coords={
+            "isobaricInhPa": isobaric_levels,
             "latitude": lat_coords,
             "longitude": lon_coords,
-            "time": time_coord,
         },
     )
 
-    # --- Mock Isobaric Dataset (for wind, temp) ---
-    pressure_levels = [850, 700]
-    ds_iso = xr.Dataset(
-        {
-            "u": (
-                ("isobaricInhPa", "latitude", "longitude"),
-                np.full((2, len(lat_coords), len(lon_coords)), 10.0),  # U-wind
-            ),
-            "v": (
-                ("isobaricInhPa", "latitude", "longitude"),
-                np.full((2, len(lat_coords), len(lon_coords)), -5.0),  # V-wind
-            ),
-            "t": (
-                ("isobaricInhPa", "latitude", "longitude"),
-                np.array(
-                    [
-                        np.full(
-                            (len(lat_coords), len(lon_coords)), 283.0
-                        ),  # Temp at 850mb
-                        np.full(
-                            (len(lat_coords), len(lon_coords)), 273.0
-                        ),  # Temp at 700mb
-                    ]
-                ),
-            ),
-        },
-        coords={
-            "isobaricInhPa": pressure_levels,
-            "latitude": lat_coords,
-            "longitude": lon_coords,
-            "time": time_coord,
-        },
-    )
     return ds_surf, ds_iso
 
 
-def test_get_analysis_grid(monkeypatch, mock_gfs_datasets):
+@patch("s3fs.S3FileSystem")
+@patch("s3fs.S3Map")
+def test_get_analysis_grid_lazy_and_correct(MockS3Map, MockS3FileSystem, mock_gfs_data):
     """
-    Unit test for GFSIngestor.get_analysis_grid.
-
-    Tests that the function correctly processes mocked GFS data into a
-    final dataset with derived variables. It patches s3fs and xr.open_dataset
-    to avoid actual network calls.
+    Tests that get_analysis_grid returns a lazy dask-backed dataset and
+    that the final computed values are correct.
     """
-    # 1. Setup Mocks
-    mock_s3fs = unittest.mock.MagicMock()
-    monkeypatch.setattr("s3fs.S3FileSystem", mock_s3fs)
-    monkeypatch.setattr("s3fs.S3Map", unittest.mock.MagicMock())
+    # Arrange
+    MockS3FileSystem.return_value
+    MockS3Map.return_value
 
-    ds_surf, ds_iso = mock_gfs_datasets
+    ds_surf_mock, ds_iso_mock = mock_gfs_data
 
-    # Mock xr.open_dataset to return different datasets based on filter keys
-    def mock_open_dataset(*args, **kwargs):
-        filter_keys = kwargs.get("backend_kwargs", {}).get("filter_by_keys", {})
-        if filter_keys.get("typeOfLevel") == "surface":
-            return ds_surf
-        elif filter_keys.get("typeOfLevel") == "isobaricInhPa":
-            return ds_iso
-        raise ValueError("Unexpected call to xr.open_dataset with mock")
+    # Mock xr.open_dataset to return our mock datasets in order
+    with patch(
+        "xarray.open_dataset", side_effect=[ds_surf_mock, ds_iso_mock]
+    ) as mock_open_dataset:
+        ingestor = GFSIngestor()
 
-    monkeypatch.setattr("xarray.open_dataset", mock_open_dataset)
+        # Act
+        target_time = datetime(2023, 10, 27, 14, 0)
+        lat_range = (40.0, 50.0)
+        lon_range = (-120.0, -110.0)  # Converted to 240, 250
 
-    # 2. Call the Method
-    ingestor = GFSIngestor()
-    target_time = datetime(2023, 1, 1, 7, 0, 0)  # Will round to 6Z cycle
-    lat_range = (40.0, 50.0)
-    lon_range = (-120.0, -110.0)  # Converts to 240-250
-    result_ds = ingestor.get_analysis_grid(target_time, lat_range, lon_range)
+        result_ds = ingestor.get_analysis_grid(target_time, lat_range, lon_range)
 
-    # 3. Create Expected Dataset for Comparison
-    # Expected wind speed: sqrt(10^2 + (-5)^2) = sqrt(125) = 11.1803
-    expected_wind = np.full_like(ds_surf.hpbl.values, 11.1803, dtype=np.float32)
+        # --- Assertions ---
 
-    # Expected Brunt-Vaisala (N_ft)
-    t850, t700 = 283.0, 273.0
-    theta850 = t850 * (1000 / 850) ** 0.286
-    theta700 = t700 * (1000 / 700) ** 0.286
-    theta_avg = (theta850 + theta700) / 2.0
-    d_theta = theta700 - theta850
-    g, dz_approx = 9.81, 1500.0
-    expected_n_ft_val = np.sqrt((g / theta_avg) * (d_theta / dz_approx))
-    expected_n_ft = np.full_like(
-        ds_surf.hpbl.values, expected_n_ft_val, dtype=np.float32
-    )
+        # 1. Assert Laziness: The data should be a Dask array
+        assert isinstance(result_ds["pbl_height"].data, da.Array)
+        assert isinstance(result_ds["wind_speed_850mb"].data, da.Array)
+        assert isinstance(result_ds["n_ft"].data, da.Array)
 
-    expected_ds = xr.Dataset(
-        {
-            "pbl_height": (("latitude", "longitude"), ds_surf.hpbl.values),
-            "wind_speed_850mb": (("latitude", "longitude"), expected_wind),
-            "n_ft": (("latitude", "longitude"), expected_n_ft),
-        },
-        coords={
-            "latitude": ds_surf.latitude.values,
-            "longitude": ds_surf.longitude.values,
-            "time": ds_surf.time.values,
-            "isobaricInhPa": 850,
-        },
-    ).drop_vars("isobaricInhPa")
+        # 2. Assert history attribute is present
+        assert "history" in result_ds.attrs
+        assert "Processed GFS analysis data" in result_ds.attrs["history"]
 
-    # 4. Assertions
-    assert isinstance(result_ds, xr.Dataset)
-    assert "history" in result_ds.attrs
-    # Drop non-essential coords from result for comparison
-    result_ds_simplified = result_ds.drop_vars("isobaricInhPa", errors="ignore")
-    # Use xarray's testing utility for float comparisons
-    assert_allclose(
-        result_ds_simplified.astype(np.float32),
-        expected_ds.astype(np.float32),
-        rtol=1e-4,
-    )
+        # 3. Assert correct structure
+        expected_vars = {"pbl_height", "wind_speed_850mb", "n_ft"}
+        assert set(result_ds.variables) == expected_vars.union(result_ds.coords)
+
+        # 4. Trigger computation and assert correctness of values
+        computed_ds = result_ds.compute()
+
+        # PBL Height
+        expected_pbl_height = 1500.0
+        assert np.allclose(computed_ds["pbl_height"].values, expected_pbl_height)
+
+        # Wind Speed at 850mb
+        expected_wind_speed = np.sqrt(10.0**2 + (-5.0) ** 2)  # sqrt(100 + 25)
+        assert np.allclose(computed_ds["wind_speed_850mb"].values, expected_wind_speed)
+
+        # Brunt-Vaisala Frequency (N_ft)
+        # Manually recalculate based on mock data
+        g = 9.81
+        dz_approx = 1500.0
+        t850 = 285.0
+        t700 = 275.0
+        theta850 = t850 * (1000 / 850) ** 0.286
+        theta700 = t700 * (1000 / 700) ** 0.286
+        theta_avg = (theta850 + theta700) / 2.0
+        d_theta = theta700 - theta850
+        expected_n_ft = np.sqrt((g / theta_avg) * (d_theta / dz_approx))
+
+        assert np.allclose(computed_ds["n_ft"].values, expected_n_ft)
+
+        # 5. Assert S3 path was correctly formed
+        assert mock_open_dataset.call_count == 2
+        call_args = MockS3Map.call_args
+        assert (
+            call_args[1]["root"]
+            == "noaa-gfs-bdp-pds/gfs.20231027/12/atmos/gfs.t12z.pgrb2.0p25.f000"
+        )
